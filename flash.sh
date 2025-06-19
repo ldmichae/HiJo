@@ -2,7 +2,7 @@
 set -e
 
 # Constants
-BIN_NAME="nrf52840dk-sample"
+BIN_NAME="hijo"
 TARGET_TRIPLE="thumbv7em-none-eabihf"
 BIN_PATH="target/${TARGET_TRIPLE}/release/${BIN_NAME}"
 BIN_OUT="nrf.bin"
@@ -34,4 +34,3 @@ adafruit-nrfutil dfu serial \
   --singlebank
 
 echo "✅ Flash complete."
-

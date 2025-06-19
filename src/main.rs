@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod blinky;
+
 use core::panic::PanicInfo;
 use cortex_m_rt::entry;
 use nrf52840_hal as hal;
@@ -21,6 +23,8 @@ use hal::{
     twim::{Frequency, Pins, Twim},
 };
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
+
+use crate::blinky::blinky;
 
 #[entry]
 fn main() -> ! {

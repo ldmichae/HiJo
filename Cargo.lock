@@ -258,6 +258,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hijo"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "nrf52840-hal",
+ "panic-halt",
+ "ssd1306",
+]
+
+[[package]]
 name = "maybe-async-cfg"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,19 +363,6 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "vcell",
-]
-
-[[package]]
-name = "nrf52840dk-sample"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "embedded-graphics",
- "embedded-hal 1.0.0",
- "nrf52840-hal",
- "panic-halt",
- "ssd1306",
 ]
 
 [[package]]
