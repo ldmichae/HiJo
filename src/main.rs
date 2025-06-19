@@ -9,9 +9,9 @@ use nrf52840_hal as hal;
 
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_10X20, FONT_6X13_ITALIC},
-        iso_8859_15::FONT_5X8,
         MonoTextStyle,
+        ascii::{FONT_6X13_ITALIC, FONT_10X20},
+        iso_8859_15::FONT_5X8,
     },
     pixelcolor::BinaryColor,
     prelude::*,
@@ -22,9 +22,25 @@ use hal::{
     pac::Peripherals,
     twim::{Frequency, Pins, Twim},
 };
-use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
+use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 
 use crate::blinky::blinky;
+
+fn draw_static_text<D>(
+    display: &mut D,
+    lg: MonoTextStyle<BinaryColor>,
+    italic: MonoTextStyle<BinaryColor>,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    Text::with_alignment("BIG TEXT", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
+
+    Text::with_alignment("fancy text", Point::new(64, 32), italic, Alignment::Center)
+        .draw(display)?;
+
+    Ok(())
+}
 
 #[entry]
 fn main() -> ! {
@@ -52,35 +68,27 @@ fn main() -> ! {
     let text_style_sm = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
     let text_style_italic = MonoTextStyle::new(&FONT_6X13_ITALIC, BinaryColor::On);
 
-    // Draw centered "Hello!" text
-    Text::with_alignment(
-        "BIG TEXT",
-        Point::new(64, 12),
-        text_style_lg,
-        Alignment::Center,
-    )
-    .draw(&mut display)
-    .unwrap();
+    let mut x = 128;
 
-    // Draw centered "Hello!" text
-    Text::with_alignment(
-        "fancy text",
-        Point::new(64, 32),
-        text_style_italic,
-        Alignment::Center,
-    )
-    .draw(&mut display)
-    .unwrap();
+    loop {
+        display.clear(BinaryColor::Off).unwrap();
 
-    // Draw centered "Hello!" text
-    Text::with_alignment("hijo", Point::new(64, 52), text_style_sm, Alignment::Center)
-        .draw(&mut display)
-        .unwrap();
+        // Reuse the static drawing logic
+        draw_static_text(&mut display, text_style_lg, text_style_italic).unwrap();
 
-    // Flush the display buffer to screen
-    display.flush().unwrap();
+        Text::new("hijo", Point::new(x, 52), text_style_sm)
+            .draw(&mut display)
+            .unwrap();
 
-    loop {}
+        display.flush().unwrap();
+
+        x -= 1;
+        if x < -24 {
+            x = 128;
+        }
+
+        cortex_m::asm::delay(8_000_0);
+    }
 }
 
 #[panic_handler]
