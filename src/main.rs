@@ -6,7 +6,11 @@ use cortex_m_rt::entry;
 use nrf52840_hal as hal;
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_6X13_ITALIC, MonoTextStyle},
+    mono_font::{
+        ascii::{FONT_10X20, FONT_6X13_ITALIC},
+        iso_8859_15::FONT_5X8,
+        MonoTextStyle,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Text},
@@ -41,11 +45,12 @@ fn main() -> ! {
 
     // Create text style
     let text_style_lg = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+    let text_style_sm = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
     let text_style_italic = MonoTextStyle::new(&FONT_6X13_ITALIC, BinaryColor::On);
 
     // Draw centered "Hello!" text
     Text::with_alignment(
-        "Hi, Jo :)",
+        "BIG TEXT",
         Point::new(64, 12),
         text_style_lg,
         Alignment::Center,
@@ -55,13 +60,18 @@ fn main() -> ! {
 
     // Draw centered "Hello!" text
     Text::with_alignment(
-        "It's MAMA!",
+        "fancy text",
         Point::new(64, 32),
         text_style_italic,
         Alignment::Center,
     )
     .draw(&mut display)
     .unwrap();
+
+    // Draw centered "Hello!" text
+    Text::with_alignment("hijo", Point::new(64, 52), text_style_sm, Alignment::Center)
+        .draw(&mut display)
+        .unwrap();
 
     // Flush the display buffer to screen
     display.flush().unwrap();
