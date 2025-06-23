@@ -2,10 +2,16 @@
 #![no_main]
 
 mod blinky;
+mod gps;
+mod uart;
 
+use crate::{
+    gps::Gps,
+    uart::{GpsUart, init_uart},
+};
 use core::panic::PanicInfo;
 use cortex_m_rt::entry;
-use nrf52840_hal as hal;
+use nrf52840_hal::{self as hal};
 
 use embedded_graphics::{
     mono_font::{
@@ -24,8 +30,6 @@ use hal::{
 };
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 
-use crate::blinky::blinky;
-
 fn draw_static_text<D>(
     display: &mut D,
     lg: MonoTextStyle<BinaryColor>,
@@ -34,10 +38,9 @@ fn draw_static_text<D>(
 where
     D: DrawTarget<Color = BinaryColor>,
 {
-    Text::with_alignment("BIG TEXT", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
+    Text::with_alignment("HIJO", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
 
-    Text::with_alignment("fancy text", Point::new(64, 32), italic, Alignment::Center)
-        .draw(display)?;
+    Text::with_alignment("gps", Point::new(64, 32), italic, Alignment::Center).draw(display)?;
 
     Ok(())
 }
@@ -45,49 +48,63 @@ where
 #[entry]
 fn main() -> ! {
     let p = Peripherals::take().unwrap();
-    let port0 = p0::Parts::new(p.P0);
+    let uarte0 = p.UARTE0;
 
-    // Choose two unused GPIOs for SDA and SCL
-    let sda = port0.p0_22.into_floating_input().degrade(); // D2
-    let scl = port0.p0_24.into_floating_input().degrade(); // D3
+    let port0_parts = p0::Parts::new(p.P0);
 
-    // Set up I2C bus
+    let p0_06 = port0_parts.p0_06; // UART TX (MCU)
+    let p0_08 = port0_parts.p0_08; // UART RX (MCU)
+    let p0_22 = port0_parts.p0_22; // I2C SDA
+    let p0_24 = port0_parts.p0_24; // I2C SCL
+
+    let sda = p0_22.into_floating_input().degrade();
+    let scl = p0_24.into_floating_input().degrade();
+
     let i2c = Twim::new(p.TWIM0, Pins { scl, sda }, Frequency::K100);
-
-    // Create display interface
     let interface = I2CDisplayInterface::new(i2c);
-
-    // Initialize display
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
-
     display.init().unwrap();
 
-    // Create text style
     let text_style_lg = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
     let text_style_sm = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
     let text_style_italic = MonoTextStyle::new(&FONT_6X13_ITALIC, BinaryColor::On);
+
+    let uart: GpsUart = init_uart(p0_06, p0_08, uarte0);
+    let mut gps = Gps::init(uart);
 
     let mut x = 128;
 
     loop {
         display.clear(BinaryColor::Off).unwrap();
 
-        // Reuse the static drawing logic
         draw_static_text(&mut display, text_style_lg, text_style_italic).unwrap();
 
         Text::new("hijo", Point::new(x, 52), text_style_sm)
             .draw(&mut display)
             .unwrap();
 
-        display.flush().unwrap();
+        let gps_parse = gps.read_and_parse().unwrap();
 
-        x -= 1;
-        if x < -24 {
-            x = 128;
+        if let Some(_fix) = gps_parse.fix {
+            Text::new("GPS OK", Point::new(4, 60), text_style_sm)
+                .draw(&mut display)
+                .unwrap();
+        } else {
+            Text::new("NO GPS", Point::new(4, 60), text_style_sm)
+                .draw(&mut display)
+                .unwrap();
         }
 
-        cortex_m::asm::delay(8_000_0);
+        Text::new(&gps_parse.line, Point::new(0, 48), text_style_sm)
+            .draw(&mut display)
+            .unwrap();
+
+        display.flush().unwrap();
+
+        x = if x <= -24 { 128 } else { x - 1 };
+
+        cortex_m::asm::delay(8000);
     }
 }
 
