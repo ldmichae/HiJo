@@ -2,15 +2,19 @@
 #![no_main]
 
 mod blinky;
+mod float;
 mod gps;
 mod uart;
 
 use crate::{
+    float::FloatToString,
     gps::Gps,
     uart::{GpsUart, init_uart},
 };
 use core::panic::PanicInfo;
+
 use cortex_m_rt::entry;
+use nmea::sentences::FixType;
 use nrf52840_hal::{self as hal};
 
 use embedded_graphics::{
@@ -40,7 +44,7 @@ where
 {
     Text::with_alignment("HIJO", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
 
-    Text::with_alignment("gps", Point::new(64, 32), italic, Alignment::Center).draw(display)?;
+    // Text::with_alignment("gps", Point::new(64, 32), italic, Alignment::Center).draw(display)?;
 
     Ok(())
 }
@@ -86,19 +90,49 @@ fn main() -> ! {
 
         let gps_parse = gps.read_and_parse().unwrap();
 
-        if let Some(_fix) = gps_parse.fix {
-            Text::new("GPS OK", Point::new(4, 60), text_style_sm)
-                .draw(&mut display)
-                .unwrap();
+        if let Some(lla) = gps_parse.lla {
+            if let Some(lat) = lla.lat {
+                let mut float_buf = FloatToString::new();
+                let lat_str = float_buf.convert(lat);
+                Text::new(lat_str, Point::new(0, 32), text_style_sm)
+                    .draw(&mut display)
+                    .ok();
+            }
+            if let Some(lon) = lla.lon {
+                let mut float_buf = FloatToString::new();
+                let lon_str = float_buf.convert(lon);
+                Text::new(lon_str, Point::new(0, 40), text_style_sm)
+                    .draw(&mut display)
+                    .ok();
+            }
+            if let Some(alt) = lla.alt {
+                let mut float_buf = FloatToString::new();
+                let alt_str = float_buf.convert(alt.into());
+                Text::new(alt_str, Point::new(0, 48), text_style_sm)
+                    .draw(&mut display)
+                    .ok();
+            }
+        }
+
+        if let Some(fix) = gps_parse.fix {
+            if fix == FixType::Gps {
+                Text::new("GPS OK", Point::new(4, 60), text_style_sm)
+                    .draw(&mut display)
+                    .unwrap();
+            } else {
+                Text::new("NO GPS", Point::new(4, 60), text_style_sm)
+                    .draw(&mut display)
+                    .unwrap();
+            }
         } else {
-            Text::new("NO GPS", Point::new(4, 60), text_style_sm)
+            Text::new("NO FIX", Point::new(4, 60), text_style_sm)
                 .draw(&mut display)
                 .unwrap();
         }
 
-        Text::new(&gps_parse.line, Point::new(0, 48), text_style_sm)
-            .draw(&mut display)
-            .unwrap();
+        // Text::new(&gps_parse.line, Point::new(0, 48), text_style_sm)
+        //     .draw(&mut display)
+        //     .unwrap();
 
         display.flush().unwrap();
 
