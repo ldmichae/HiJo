@@ -34,11 +34,7 @@ use hal::{
 };
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 
-fn draw_static_text<D>(
-    display: &mut D,
-    lg: MonoTextStyle<BinaryColor>,
-    italic: MonoTextStyle<BinaryColor>,
-) -> Result<(), D::Error>
+fn draw_static_text<D>(display: &mut D, lg: MonoTextStyle<BinaryColor>) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = BinaryColor>,
 {
@@ -72,7 +68,6 @@ fn main() -> ! {
 
     let text_style_lg = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
     let text_style_sm = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
-    let text_style_italic = MonoTextStyle::new(&FONT_6X13_ITALIC, BinaryColor::On);
 
     let uart: GpsUart = init_uart(p0_06, p0_08, uarte0);
     let mut gps = Gps::init(uart);
@@ -82,7 +77,7 @@ fn main() -> ! {
     loop {
         display.clear(BinaryColor::Off).unwrap();
 
-        draw_static_text(&mut display, text_style_lg, text_style_italic).unwrap();
+        draw_static_text(&mut display, text_style_lg).unwrap();
 
         Text::new("hijo", Point::new(x, 52), text_style_sm)
             .draw(&mut display)
