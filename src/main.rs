@@ -14,15 +14,12 @@ use crate::{
 use core::panic::PanicInfo;
 
 use cortex_m_rt::entry;
+use embedded_hal::digital::InputPin;
 use nmea::sentences::FixType;
 use nrf52840_hal::{self as hal};
 
 use embedded_graphics::{
-    mono_font::{
-        MonoTextStyle,
-        ascii::{FONT_6X13_ITALIC, FONT_10X20},
-        iso_8859_15::FONT_5X8,
-    },
+    mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Text},
@@ -54,11 +51,14 @@ fn main() -> ! {
 
     let p0_06 = port0_parts.p0_06; // UART TX (MCU)
     let p0_08 = port0_parts.p0_08; // UART RX (MCU)
+    let p0_017 = port0_parts.p0_17; // Button
     let p0_22 = port0_parts.p0_22; // I2C SDA
     let p0_24 = port0_parts.p0_24; // I2C SCL
 
     let sda = p0_22.into_floating_input().degrade();
     let scl = p0_24.into_floating_input().degrade();
+
+    let mut btn = p0_017.into_pullup_input();
 
     let i2c = Twim::new(p.TWIM0, Pins { scl, sda }, Frequency::K100);
     let interface = I2CDisplayInterface::new(i2c);
@@ -73,19 +73,29 @@ fn main() -> ! {
     let mut gps = Gps::init(uart);
 
     let mut x = 128;
+    let mut frame_counter: i32 = 0;
+
+    let mut last_fix: Option<FixType> = None;
+    let mut last_lla: Option<gps::LLA> = None;
+
+    let mut is_recording = false;
 
     loop {
         display.clear(BinaryColor::Off).unwrap();
-
         draw_static_text(&mut display, text_style_lg).unwrap();
 
         Text::new("hijo", Point::new(x, 52), text_style_sm)
             .draw(&mut display)
             .unwrap();
 
-        let gps_parse = gps.read_and_parse().unwrap();
+        if frame_counter % 10 == 0 {
+            if let Some(gps_parse) = gps.read_and_parse() {
+                last_fix = gps_parse.fix;
+                last_lla = gps_parse.lla;
+            }
+        }
 
-        if let Some(lla) = gps_parse.lla {
+        if let Some(lla) = &last_lla {
             if let Some(lat) = lla.lat {
                 let mut float_buf = FloatToString::new();
                 let lat_str = float_buf.convert(lat);
@@ -109,31 +119,35 @@ fn main() -> ! {
             }
         }
 
-        if let Some(fix) = gps_parse.fix {
-            if fix == FixType::Gps {
-                Text::new("GPS OK", Point::new(4, 60), text_style_sm)
-                    .draw(&mut display)
-                    .unwrap();
+        if let Some(fix) = &last_fix {
+            let fix_text = if *fix == FixType::Gps {
+                "GPS OK"
             } else {
-                Text::new("NO GPS", Point::new(4, 60), text_style_sm)
-                    .draw(&mut display)
-                    .unwrap();
-            }
+                "NO GPS"
+            };
+            Text::new(fix_text, Point::new(4, 60), text_style_sm)
+                .draw(&mut display)
+                .unwrap();
         } else {
             Text::new("NO FIX", Point::new(4, 60), text_style_sm)
                 .draw(&mut display)
                 .unwrap();
         }
 
-        // Text::new(&gps_parse.line, Point::new(0, 48), text_style_sm)
-        //     .draw(&mut display)
-        //     .unwrap();
+        if btn.is_low().unwrap() {
+            is_recording = !is_recording
+        }
+
+        let recording_state_text = if is_recording { "STOP" } else { "START" };
+        Text::new(recording_state_text, Point::new(72, 32), text_style_sm)
+            .draw(&mut display)
+            .unwrap();
 
         display.flush().unwrap();
 
         x = if x <= -24 { 128 } else { x - 1 };
 
-        cortex_m::asm::delay(8000);
+        frame_counter = frame_counter.wrapping_add(1);
     }
 }
 

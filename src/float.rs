@@ -44,7 +44,7 @@ impl FloatToString {
                 let mut i = temp_buffer.len();
                 while temp_integer > 0 {
                     i -= 1;
-                    temp_buffer[i] = (b'0' + (temp_integer % 10) as u8);
+                    temp_buffer[i] = b'0' + (temp_integer % 10) as u8;
                     temp_integer /= 10;
                 }
                 let _ =
