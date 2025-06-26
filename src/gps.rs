@@ -13,10 +13,10 @@ pub struct Gps {
 pub struct ParseOut {
     pub fix: Option<FixType>,
     pub line: String<128>,
-    pub lla: Option<LLA>,
+    pub lat_lon_altitude: Option<LatLonAlt>,
 }
 
-pub struct LLA {
+pub struct LatLonAlt {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub alt: Option<f32>,
@@ -64,12 +64,12 @@ impl Gps {
         None
     }
 
-    fn get_pos(&mut self) -> LLA {
+    fn get_pos(&mut self) -> LatLonAlt {
         let lat = self.parser.latitude();
         let lon = self.parser.longitude();
         let alt = self.parser.altitude();
 
-        return LLA { lat, lon, alt };
+        return LatLonAlt { lat, lon, alt };
     }
 
     fn parse_line(&mut self, line: heapless::String<128>) -> Option<ParseOut> {
@@ -85,7 +85,7 @@ impl Gps {
                         Some(ParseOut {
                             fix: Some(fix),
                             line: msg,
-                            lla: Some(lla),
+                            lat_lon_altitude: Some(lla),
                         })
                     } else {
                         let _ = msg.push_str("[NOFIX] ");
@@ -93,7 +93,7 @@ impl Gps {
                         Some(ParseOut {
                             fix: None,
                             line: msg,
-                            lla: None,
+                            lat_lon_altitude: None,
                         })
                     }
                 }
@@ -103,7 +103,7 @@ impl Gps {
                     Some(ParseOut {
                         fix: None,
                         line: msg,
-                        lla: None,
+                        lat_lon_altitude: None,
                     })
                 }
             }
@@ -113,7 +113,7 @@ impl Gps {
             Some(ParseOut {
                 fix: None,
                 line: msg,
-                lla: None,
+                lat_lon_altitude: None,
             })
         }
     }

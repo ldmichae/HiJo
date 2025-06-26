@@ -76,7 +76,7 @@ fn main() -> ! {
     let mut frame_counter: i32 = 0;
 
     let mut last_fix: Option<FixType> = None;
-    let mut last_lla: Option<gps::LLA> = None;
+    let mut last_lat_lon_alt: Option<gps::LatLonAlt> = None;
 
     let mut is_recording = false;
 
@@ -91,26 +91,26 @@ fn main() -> ! {
         if frame_counter % 10 == 0 {
             if let Some(gps_parse) = gps.read_and_parse() {
                 last_fix = gps_parse.fix;
-                last_lla = gps_parse.lla;
+                last_lat_lon_alt = gps_parse.lat_lon_altitude;
             }
         }
 
-        if let Some(lla) = &last_lla {
-            if let Some(lat) = lla.lat {
+        if let Some(lat_lon_alt) = &last_lat_lon_alt {
+            if let Some(lat) = lat_lon_alt.lat {
                 let mut float_buf = FloatToString::new();
                 let lat_str = float_buf.convert(lat);
                 Text::new(lat_str, Point::new(0, 32), text_style_sm)
                     .draw(&mut display)
                     .ok();
             }
-            if let Some(lon) = lla.lon {
+            if let Some(lon) = lat_lon_alt.lon {
                 let mut float_buf = FloatToString::new();
                 let lon_str = float_buf.convert(lon);
                 Text::new(lon_str, Point::new(0, 40), text_style_sm)
                     .draw(&mut display)
                     .ok();
             }
-            if let Some(alt) = lla.alt {
+            if let Some(alt) = lat_lon_alt.alt {
                 let mut float_buf = FloatToString::new();
                 let alt_str = float_buf.convert(alt.into());
                 Text::new(alt_str, Point::new(0, 48), text_style_sm)
