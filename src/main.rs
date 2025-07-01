@@ -1,22 +1,27 @@
 #![no_std]
 #![no_main]
 
-mod blinky;
 mod float;
 mod gps;
-mod uart;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
+use embassy_time::{Duration, Timer};
+use panic_halt as _;
+use static_cell::StaticCell;
 
 use crate::{
     float::FloatToString,
-    gps::Gps,
-    uart::{GpsUart, init_uart},
+    gps::{GpsReader, ParseOut},
 };
-use core::panic::PanicInfo;
 
-use cortex_m_rt::entry;
-use embedded_hal::digital::InputPin;
+use embassy_executor::Spawner;
+use embassy_nrf::{
+    bind_interrupts,
+    gpio::{Input, Pull},
+    peripherals,
+    twim::{self, Twim},
+    uarte::{self, Baudrate, Parity},
+};
 use nmea::sentences::FixType;
-use nrf52840_hal::{self as hal};
 
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8},
@@ -24,12 +29,26 @@ use embedded_graphics::{
     prelude::*,
     text::{Alignment, Text},
 };
-use hal::{
-    gpio::p0,
-    pac::Peripherals,
-    twim::{Frequency, Pins, Twim},
-};
+
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
+
+bind_interrupts!(struct Irqs {
+    TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
+    UARTE0 => uarte::InterruptHandler<peripherals::UARTE0>;
+});
+
+static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
+static SHARED_STATE: StaticCell<Mutex<NoopRawMutex, SharedState>> = StaticCell::new();
+static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
+
+const TEXT_STYLE_LG: MonoTextStyle<'_, BinaryColor> =
+    MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+const TEXT_STYLE_SM: MonoTextStyle<'_, BinaryColor> =
+    MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
+
+pub struct SharedState {
+    pub is_recording: bool,
+}
 
 fn draw_static_text<D>(display: &mut D, lg: MonoTextStyle<BinaryColor>) -> Result<(), D::Error>
 where
@@ -37,121 +56,145 @@ where
 {
     Text::with_alignment("HIJO", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
 
-    // Text::with_alignment("gps", Point::new(64, 32), italic, Alignment::Center).draw(display)?;
-
     Ok(())
 }
 
-#[entry]
-fn main() -> ! {
-    let p = Peripherals::take().unwrap();
-    let uarte0 = p.UARTE0;
+fn draw_optional_float<D>(
+    display: &mut D,
+    value: Option<impl Into<f64>>,
+    y: i32,
+    style: MonoTextStyle<BinaryColor>,
+) where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    if let Some(v) = value {
+        let mut float_buf = FloatToString::new();
+        let text = float_buf.convert(v.into());
+        let _ = Text::new(text, Point::new(0, y), style).draw(display);
+    }
+}
 
-    let port0_parts = p0::Parts::new(p.P0);
+#[embassy_executor::task]
+async fn gps_reader_task(gps_reader: &'static mut GpsReader<'static>) {
+    gps_reader.run().await;
+}
 
-    let p0_06 = port0_parts.p0_06; // UART TX (MCU)
-    let p0_08 = port0_parts.p0_08; // UART RX (MCU)
-    let p0_017 = port0_parts.p0_17; // Button
-    let p0_22 = port0_parts.p0_22; // I2C SDA
-    let p0_24 = port0_parts.p0_24; // I2C SCL
+#[embassy_executor::task]
+async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SharedState>) {
+    let mut last_state = button.is_high(); // true if not pressed
 
-    let sda = p0_22.into_floating_input().degrade();
-    let scl = p0_24.into_floating_input().degrade();
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
 
-    let mut btn = p0_017.into_pullup_input();
+        if last_state && !current_state {
+            // falling edge: just pressed
+            // debounce
+            Timer::after(Duration::from_millis(20)).await;
 
-    let i2c = Twim::new(p.TWIM0, Pins { scl, sda }, Frequency::K100);
+            if button.is_low() {
+                // confirmed press
+                let mut lock = shared.lock().await;
+                lock.is_recording = !lock.is_recording;
+            }
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_nrf::init(Default::default());
+
+    // set up uarte
+    let mut uart_config = uarte::Config::default();
+    uart_config.parity = Parity::EXCLUDED;
+    uart_config.baudrate = Baudrate::BAUD115200;
+
+    let uart = uarte::Uarte::new(p.UARTE0, Irqs, p.P0_08, p.P0_06, uart_config);
+
+    // set up display
+    let twim_config = twim::Config::default();
+    let i2c = Twim::new(p.TWISPI0, Irqs, p.P0_22, p.P0_24, twim_config);
+
     let interface = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     display.init().unwrap();
 
-    let text_style_lg = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    let text_style_sm = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
+    let gps_channel = CHANNEL.init(Channel::new());
 
-    let uart: GpsUart = init_uart(p0_06, p0_08, uarte0);
-    let mut gps = Gps::init(uart);
+    let shared = SHARED_STATE.init(Mutex::new(SharedState {
+        is_recording: false,
+    }));
+
+    let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
+
+    let button = Input::new(p.P0_17, Pull::Up);
 
     let mut x = 128;
-    let mut frame_counter: i32 = 0;
 
     let mut last_fix: Option<FixType> = None;
     let mut last_lat_lon_alt: Option<gps::LatLonAlt> = None;
 
-    let mut is_recording = false;
+    spawner.spawn(button_task(button, shared)).unwrap();
+    spawner.spawn(gps_reader_task(gps_reader)).unwrap();
 
     loop {
+        Timer::after(Duration::from_millis(100)).await;
         display.clear(BinaryColor::Off).unwrap();
-        draw_static_text(&mut display, text_style_lg).unwrap();
 
-        Text::new("hijo", Point::new(x, 52), text_style_sm)
+        draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
+
+        Text::new("hijo", Point::new(x, 52), TEXT_STYLE_SM)
             .draw(&mut display)
             .unwrap();
 
-        if frame_counter % 10 == 0 {
-            if let Some(gps_parse) = gps.read_and_parse() {
-                last_fix = gps_parse.fix;
-                last_lat_lon_alt = gps_parse.lat_lon_altitude;
-            }
+        while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
+            last_fix = gps_parse.fix.or(last_fix);
+            last_lat_lon_alt = gps_parse.lat_lon_altitude.or(last_lat_lon_alt);
         }
 
         if let Some(lat_lon_alt) = &last_lat_lon_alt {
-            if let Some(lat) = lat_lon_alt.lat {
-                let mut float_buf = FloatToString::new();
-                let lat_str = float_buf.convert(lat);
-                Text::new(lat_str, Point::new(0, 32), text_style_sm)
-                    .draw(&mut display)
-                    .ok();
-            }
-            if let Some(lon) = lat_lon_alt.lon {
-                let mut float_buf = FloatToString::new();
-                let lon_str = float_buf.convert(lon);
-                Text::new(lon_str, Point::new(0, 40), text_style_sm)
-                    .draw(&mut display)
-                    .ok();
-            }
-            if let Some(alt) = lat_lon_alt.alt {
-                let mut float_buf = FloatToString::new();
-                let alt_str = float_buf.convert(alt.into());
-                Text::new(alt_str, Point::new(0, 48), text_style_sm)
-                    .draw(&mut display)
-                    .ok();
-            }
+            draw_optional_float(&mut display, lat_lon_alt.lat, 32, TEXT_STYLE_SM);
+            draw_optional_float(&mut display, lat_lon_alt.lon, 40, TEXT_STYLE_SM);
+            draw_optional_float(
+                &mut display,
+                lat_lon_alt.alt.map(f64::from),
+                48,
+                TEXT_STYLE_SM,
+            );
         }
 
         if let Some(fix) = &last_fix {
-            let fix_text = if *fix == FixType::Gps {
-                "GPS OK"
-            } else {
-                "NO GPS"
+            let fix_text = match fix {
+                FixType::Invalid => "INVALID",
+                FixType::Gps => "GPS",
+                FixType::DGps => "DGPS",
+                _ => "OTHER",
             };
-            Text::new(fix_text, Point::new(4, 60), text_style_sm)
+            Text::new(fix_text, Point::new(4, 60), TEXT_STYLE_SM)
                 .draw(&mut display)
                 .unwrap();
         } else {
-            Text::new("NO FIX", Point::new(4, 60), text_style_sm)
+            Text::new("NO GPS", Point::new(4, 60), TEXT_STYLE_SM)
                 .draw(&mut display)
                 .unwrap();
         }
 
-        if btn.is_low().unwrap() {
-            is_recording = !is_recording
-        }
+        let is_recording = {
+            let lock = shared.lock().await;
+            lock.is_recording
+        };
 
         let recording_state_text = if is_recording { "STOP" } else { "START" };
-        Text::new(recording_state_text, Point::new(72, 32), text_style_sm)
+        Text::new(recording_state_text, Point::new(72, 32), TEXT_STYLE_SM)
             .draw(&mut display)
             .unwrap();
 
         display.flush().unwrap();
 
         x = if x <= -24 { 128 } else { x - 1 };
-
-        frame_counter = frame_counter.wrapping_add(1);
     }
-}
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
 }

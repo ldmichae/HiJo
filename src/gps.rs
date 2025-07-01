@@ -1,18 +1,20 @@
+use embassy_nrf::{peripherals, uarte};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
 use heapless::String;
 use nmea::{Nmea, sentences::FixType};
 
-use crate::uart::GpsUart;
-
-pub struct Gps {
-    uart: GpsUart,
+pub struct GpsReader<'a> {
+    uart: uarte::Uarte<'a, peripherals::UARTE0>,
     rx_buffer: [u8; 1],
-    sentence_buffer: heapless::String<128>, // or any fixed-size string buffer
+    sentence_buffer: heapless::String<128>,
     parser: Nmea,
+    sender: Sender<'static, NoopRawMutex, ParseOut, 1>,
 }
 
 pub struct ParseOut {
     pub fix: Option<FixType>,
     pub line: String<128>,
+    // Optional: parsed lat/lon/alt
     pub lat_lon_altitude: Option<LatLonAlt>,
 }
 
@@ -22,54 +24,26 @@ pub struct LatLonAlt {
     pub alt: Option<f32>,
 }
 
-impl Gps {
-    pub fn init(uart: GpsUart) -> Self {
-        Gps {
+impl<'a> GpsReader<'a> {
+    pub fn new(
+        uart: uarte::Uarte<'a, peripherals::UARTE0>,
+        sender: Sender<'static, NoopRawMutex, ParseOut, 1>,
+    ) -> Self {
+        GpsReader {
             uart,
             rx_buffer: [0; 1],
             sentence_buffer: heapless::String::new(),
             parser: Nmea::default(),
+            sender,
         }
-    }
-
-    pub fn read_and_parse(&mut self) -> Option<ParseOut> {
-        loop {
-            match self.uart.read(&mut self.rx_buffer) {
-                Ok(()) => {
-                    let byte = self.rx_buffer[0];
-                    match byte {
-                        b'$' => {
-                            if !self.sentence_buffer.is_empty() {
-                                let mut line = heapless::String::new();
-                                core::mem::swap(&mut line, &mut self.sentence_buffer);
-                                if let Some(out) = self.parse_line(line) {
-                                    return Some(out);
-                                }
-                            }
-                            self.sentence_buffer.clear();
-                            let _ = self.sentence_buffer.push('$');
-                        }
-                        b'\r' => {}
-                        _ => {
-                            if !self.sentence_buffer.is_empty() {
-                                let _ = self.sentence_buffer.push(byte as char);
-                            }
-                        }
-                    }
-                }
-                Err(_) => break, // No more data available, exit loop
-            }
-        }
-
-        None
     }
 
     fn get_pos(&mut self) -> LatLonAlt {
-        let lat = self.parser.latitude();
-        let lon = self.parser.longitude();
-        let alt = self.parser.altitude();
-
-        return LatLonAlt { lat, lon, alt };
+        LatLonAlt {
+            lat: self.parser.latitude(),
+            lon: self.parser.longitude(),
+            alt: self.parser.altitude(),
+        }
     }
 
     fn parse_line(&mut self, line: heapless::String<128>) -> Option<ParseOut> {
@@ -115,6 +89,48 @@ impl Gps {
                 line: msg,
                 lat_lon_altitude: None,
             })
+        }
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            if self.uart.read(&mut self.rx_buffer).await.is_ok() {
+                let byte = self.rx_buffer[0];
+                match byte {
+                    b'$' => {
+                        // Start of new sentence
+                        if !self.sentence_buffer.is_empty() {
+                            // Parse previous sentence before starting new one
+                            let mut line = heapless::String::new();
+                            core::mem::swap(&mut line, &mut self.sentence_buffer);
+                            if let Some(out) = self.parse_line(line) {
+                                self.sender.send(out).await;
+                            }
+                            self.sentence_buffer.clear();
+                        }
+                        let _ = self.sentence_buffer.push('$');
+                    }
+                    b'\n' => {
+                        // End of sentence — parse what we have
+                        if !self.sentence_buffer.is_empty() {
+                            let mut line = heapless::String::new();
+                            core::mem::swap(&mut line, &mut self.sentence_buffer);
+                            if let Some(out) = self.parse_line(line) {
+                                self.sender.send(out).await;
+                            }
+                            self.sentence_buffer.clear();
+                        }
+                    }
+                    b'\r' => {
+                        // Just ignore carriage return
+                    }
+                    _ => {
+                        if !self.sentence_buffer.is_empty() {
+                            let _ = self.sentence_buffer.push(byte as char);
+                        }
+                    }
+                }
+            }
         }
     }
 }
