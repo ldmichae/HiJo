@@ -133,7 +133,7 @@ async fn main(spawner: Spawner) {
 
         while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
             last_fix = gps_parse.fix.or(last_fix);
-            let new_coords = gps_parse.lat_lon_altitude.or(last_lat_lon_alt);
+            let new_coords = gps_parse.reader_results.or(last_lat_lon_alt);
             last_lat_lon_alt = new_coords;
             if let Some(coords) = new_coords {
                 geo_stack.add_coords(coords);
