@@ -529,6 +529,7 @@ dependencies = [
  "embedded-io",
  "embedded-io-async",
  "heapless",
+ "libm",
  "nmea",
  "panic-halt",
  "ssd1306",

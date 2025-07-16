@@ -15,15 +15,16 @@ pub struct ParseOut {
     pub fix: Option<FixType>,
     pub line: String<128>,
     // Optional: parsed lat/lon/alt
-    pub lat_lon_altitude: Option<LatLonAlt>,
+    pub lat_lon_altitude: Option<GpsReaderResults>,
 }
 
-pub struct LatLonAlt {
+#[derive(Copy, Clone)]
+pub struct GpsReaderResults {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub alt: Option<f32>,
+    pub hdop: Option<f32>,
 }
-
 impl<'a> GpsReader<'a> {
     pub fn new(
         uart: uarte::Uarte<'a, peripherals::UARTE0>,
@@ -38,11 +39,12 @@ impl<'a> GpsReader<'a> {
         }
     }
 
-    fn get_pos(&mut self) -> LatLonAlt {
-        LatLonAlt {
+    fn get_pos(&mut self) -> GpsReaderResults {
+        GpsReaderResults {
             lat: self.parser.latitude(),
             lon: self.parser.longitude(),
             alt: self.parser.altitude(),
+            hdop: self.parser.hdop(),
         }
     }
 

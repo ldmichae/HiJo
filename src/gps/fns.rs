@@ -1,0 +1,38 @@
+use libm::{atan2, cos, sin, sqrt};
+
+#[derive(Debug, Copy, Clone)]
+pub struct LatLon {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+const EARTH_RADIUS_M: f64 = 6371000.0;
+const FT_PER_METER: f64 = 3.28084;
+const FT_IN_A_MILE: f64 = 5280.0;
+
+fn to_radians(degrees: f64) -> f64 {
+    degrees * (core::f64::consts::PI / 180.0)
+}
+
+pub fn haversine_distance_ft(p1: LatLon, p2: LatLon) -> f64 {
+    let lat1_rad = to_radians(p1.latitude);
+    let lon1_rad = to_radians(p1.longitude);
+    let lat2_rad = to_radians(p2.latitude);
+    let lon2_rad = to_radians(p2.longitude);
+
+    let d_lat = lat2_rad - lat1_rad;
+    let d_lon = lon2_rad - lon1_rad;
+
+    let sin_dlat = sin(d_lat / 2.0);
+    let sin_dlon = sin(d_lon / 2.0);
+
+    let a = sin_dlat * sin_dlat + cos(lat1_rad) * cos(lat2_rad) * sin_dlon * sin_dlon;
+
+    let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+
+    EARTH_RADIUS_M * FT_PER_METER * c
+}
+
+pub fn calculate_speed(distance_ft: f64) -> f64 {
+    (distance_ft * 3600.0) / FT_IN_A_MILE
+}

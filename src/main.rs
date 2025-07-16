@@ -1,16 +1,22 @@
 #![no_std]
 #![no_main]
 
-mod float;
 mod gps;
+mod utils;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use panic_halt as _;
 use static_cell::StaticCell;
 
 use crate::{
-    float::FloatToString,
-    gps::{GpsReader, ParseOut},
+    draw_fns::utils::{
+        draw_coords, draw_current_speed, draw_fix_status, draw_hdop, draw_last_segment_distance,
+        draw_moving_jo, draw_recording_status, draw_static_text, draw_total_distance,
+    },
+    gps::{
+        reader::{GpsReader, ParseOut},
+        stack::GeoStack,
+    },
 };
 
 use embassy_executor::Spawner;
@@ -27,11 +33,10 @@ use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8},
     pixelcolor::BinaryColor,
     prelude::*,
-    text::{Alignment, Text},
 };
 
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
-
+mod draw_fns;
 bind_interrupts!(struct Irqs {
     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
     UARTE0 => uarte::InterruptHandler<peripherals::UARTE0>;
@@ -48,30 +53,6 @@ const TEXT_STYLE_SM: MonoTextStyle<'_, BinaryColor> =
 
 pub struct SharedState {
     pub is_recording: bool,
-}
-
-fn draw_static_text<D>(display: &mut D, lg: MonoTextStyle<BinaryColor>) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    Text::with_alignment("HIJO", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
-
-    Ok(())
-}
-
-fn draw_optional_float<D>(
-    display: &mut D,
-    value: Option<impl Into<f64>>,
-    y: i32,
-    style: MonoTextStyle<BinaryColor>,
-) where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    if let Some(v) = value {
-        let mut float_buf = FloatToString::new();
-        let text = float_buf.convert(v.into());
-        let _ = Text::new(text, Point::new(0, y), style).draw(display);
-    }
 }
 
 #[embassy_executor::task]
@@ -105,6 +86,10 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    let shared = SHARED_STATE.init(Mutex::new(SharedState {
+        is_recording: false,
+    }));
+
     let p = embassy_nrf::init(Default::default());
 
     // set up uarte
@@ -124,11 +109,6 @@ async fn main(spawner: Spawner) {
     display.init().unwrap();
 
     let gps_channel = CHANNEL.init(Channel::new());
-
-    let shared = SHARED_STATE.init(Mutex::new(SharedState {
-        is_recording: false,
-    }));
-
     let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
 
     let button = Input::new(p.P0_17, Pull::Up);
@@ -136,7 +116,10 @@ async fn main(spawner: Spawner) {
     let mut x = 128;
 
     let mut last_fix: Option<FixType> = None;
-    let mut last_lat_lon_alt: Option<gps::LatLonAlt> = None;
+
+    let mut last_lat_lon_alt: Option<gps::reader::GpsReaderResults> = None;
+
+    let mut geo_stack = GeoStack::new();
 
     spawner.spawn(button_task(button, shared)).unwrap();
     spawner.spawn(gps_reader_task(gps_reader)).unwrap();
@@ -146,52 +129,30 @@ async fn main(spawner: Spawner) {
         display.clear(BinaryColor::Off).unwrap();
 
         draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
-
-        Text::new("hijo", Point::new(x, 52), TEXT_STYLE_SM)
-            .draw(&mut display)
-            .unwrap();
+        draw_moving_jo(x, &mut display);
 
         while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
             last_fix = gps_parse.fix.or(last_fix);
-            last_lat_lon_alt = gps_parse.lat_lon_altitude.or(last_lat_lon_alt);
+            let new_coords = gps_parse.lat_lon_altitude.or(last_lat_lon_alt);
+            last_lat_lon_alt = new_coords;
+            if let Some(coords) = new_coords {
+                geo_stack.add_coords(coords);
+            }
         }
 
-        if let Some(lat_lon_alt) = &last_lat_lon_alt {
-            draw_optional_float(&mut display, lat_lon_alt.lat, 32, TEXT_STYLE_SM);
-            draw_optional_float(&mut display, lat_lon_alt.lon, 40, TEXT_STYLE_SM);
-            draw_optional_float(
-                &mut display,
-                lat_lon_alt.alt.map(f64::from),
-                48,
-                TEXT_STYLE_SM,
-            );
-        }
-
-        if let Some(fix) = &last_fix {
-            let fix_text = match fix {
-                FixType::Invalid => "INVALID",
-                FixType::Gps => "GPS",
-                FixType::DGps => "DGPS",
-                _ => "OTHER",
-            };
-            Text::new(fix_text, Point::new(4, 60), TEXT_STYLE_SM)
-                .draw(&mut display)
-                .unwrap();
-        } else {
-            Text::new("NO GPS", Point::new(4, 60), TEXT_STYLE_SM)
-                .draw(&mut display)
-                .unwrap();
-        }
+        draw_coords(&last_lat_lon_alt, &mut display);
+        draw_fix_status(last_fix, &mut display);
 
         let is_recording = {
             let lock = shared.lock().await;
             lock.is_recording
         };
 
-        let recording_state_text = if is_recording { "STOP" } else { "START" };
-        Text::new(recording_state_text, Point::new(72, 32), TEXT_STYLE_SM)
-            .draw(&mut display)
-            .unwrap();
+        // draw_recording_status(is_recording, &mut display);
+        draw_total_distance(geo_stack.total_distance, &mut display);
+        draw_current_speed(geo_stack.current_speed_mph, &mut display);
+        draw_last_segment_distance(geo_stack.last_segment_distance, &mut display);
+        draw_hdop(geo_stack.current_hdop, &mut display);
 
         display.flush().unwrap();
 

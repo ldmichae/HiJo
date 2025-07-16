@@ -21,6 +21,7 @@ embedded-graphics = "0.8.1"
 heapless = "0.8.0"
 panic-halt = "1.0.0"
 static_cell = "2.1.1"
+libm = "0.2.15"
 
 [profile.release]
 opt-level = 1
