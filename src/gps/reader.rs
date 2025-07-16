@@ -15,7 +15,7 @@ pub struct ParseOut {
     pub fix: Option<FixType>,
     pub line: String<128>,
     // Optional: parsed lat/lon/alt
-    pub lat_lon_altitude: Option<GpsReaderResults>,
+    pub reader_results: Option<GpsReaderResults>,
 }
 
 #[derive(Copy, Clone)]
@@ -24,6 +24,7 @@ pub struct GpsReaderResults {
     pub lon: Option<f64>,
     pub alt: Option<f32>,
     pub hdop: Option<f32>,
+    pub timestamp: Option<u64>,
 }
 impl<'a> GpsReader<'a> {
     pub fn new(
@@ -45,6 +46,7 @@ impl<'a> GpsReader<'a> {
             lon: self.parser.longitude(),
             alt: self.parser.altitude(),
             hdop: self.parser.hdop(),
+            timestamp: self.parser.fix_timestamp()
         }
     }
 
@@ -61,7 +63,7 @@ impl<'a> GpsReader<'a> {
                         Some(ParseOut {
                             fix: Some(fix),
                             line: msg,
-                            lat_lon_altitude: Some(lla),
+                            reader_results: Some(lla),
                         })
                     } else {
                         let _ = msg.push_str("[NOFIX] ");
@@ -69,7 +71,7 @@ impl<'a> GpsReader<'a> {
                         Some(ParseOut {
                             fix: None,
                             line: msg,
-                            lat_lon_altitude: None,
+                            reader_results: None,
                         })
                     }
                 }
@@ -79,7 +81,7 @@ impl<'a> GpsReader<'a> {
                     Some(ParseOut {
                         fix: None,
                         line: msg,
-                        lat_lon_altitude: None,
+                        reader_results: None,
                     })
                 }
             }
@@ -89,7 +91,7 @@ impl<'a> GpsReader<'a> {
             Some(ParseOut {
                 fix: None,
                 line: msg,
-                lat_lon_altitude: None,
+                reader_results: None,
             })
         }
     }
