@@ -33,6 +33,11 @@ pub fn haversine_distance_ft(p1: LatLon, p2: LatLon) -> f64 {
     EARTH_RADIUS_M * FT_PER_METER * c
 }
 
-pub fn calculate_speed(distance_ft: f64) -> f64 {
-    (distance_ft * 3600.0) / FT_IN_A_MILE
+pub fn calculate_speed(distance_ft: f64, time_secs: f64) -> f64 {
+    let fps_to_mph_conversion_factor = 3600.0 / FT_IN_A_MILE;
+    if time_secs == 0.0 {
+        return 0.0;
+    }
+    let speed_fps = distance_ft / time_secs;
+    speed_fps * fps_to_mph_conversion_factor
 }
