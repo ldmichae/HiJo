@@ -10,8 +10,7 @@ use static_cell::StaticCell;
 
 use crate::{
     draw_fns::utils::{
-        draw_coords, draw_current_speed, draw_fix_status, draw_hdop, draw_last_segment_distance,
-        draw_moving_jo, draw_recording_status, draw_static_text, draw_total_distance,
+        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status, draw_static_text, draw_total_distance, draw_total_elev_gain
     },
     gps::{
         reader::{GpsReader, ParseOut},
@@ -30,7 +29,7 @@ use embassy_nrf::{
 use nmea::sentences::FixType;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8},
+    mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8, ascii::FONT_6X13, ascii::FONT_4X6},
     pixelcolor::BinaryColor,
     prelude::*,
 };
@@ -44,12 +43,18 @@ bind_interrupts!(struct Irqs {
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
 static SHARED_STATE: StaticCell<Mutex<NoopRawMutex, SharedState>> = StaticCell::new();
+static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
 
 const TEXT_STYLE_LG: MonoTextStyle<'_, BinaryColor> =
     MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+const TEXT_STYLE_MD: MonoTextStyle<'_, BinaryColor> =
+    MonoTextStyle::new(&FONT_6X13, BinaryColor::On);
 const TEXT_STYLE_SM: MonoTextStyle<'_, BinaryColor> =
     MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
+const TEXT_STYLE_XS: MonoTextStyle<'_, BinaryColor> =
+    MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
 
 pub struct SharedState {
     pub is_recording: bool,
@@ -84,11 +89,26 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
     }
 }
 
+// Add this task function
+#[embassy_executor::task]
+async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>) {
+    loop {
+        // Toggle the show_jo state
+        let mut show_jo_lock = show_jo_mutex.lock().await;
+        *show_jo_lock = !*show_jo_lock;
+        drop(show_jo_lock); // Release the lock immediately
+
+        // Wait for 1 second before the next toggle
+        Timer::after(Duration::from_millis(500)).await;
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let shared = SHARED_STATE.init(Mutex::new(SharedState {
         is_recording: false,
     }));
+    let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
 
     let p = embassy_nrf::init(Default::default());
 
@@ -113,8 +133,6 @@ async fn main(spawner: Spawner) {
 
     let button = Input::new(p.P0_17, Pull::Up);
 
-    let mut x = 128;
-
     let mut last_fix: Option<FixType> = None;
 
     let mut last_lat_lon_alt: Option<gps::reader::GpsReaderResults> = None;
@@ -123,39 +141,44 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(button_task(button, shared)).unwrap();
     spawner.spawn(gps_reader_task(gps_reader)).unwrap();
+    spawner.spawn(show_jo_updater_task(blink_mutex_ref)).unwrap();
 
     loop {
+        let is_recording = {
+            let lock = shared.lock().await;
+            lock.is_recording
+        };
+
+        let should_blink = {
+            let lock = blink_mutex_ref.lock().await;
+            *lock
+        };
+
         Timer::after(Duration::from_millis(100)).await;
         display.clear(BinaryColor::Off).unwrap();
 
         draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
-        draw_moving_jo(x, &mut display);
+        if should_blink {
+            draw_blinky(&mut display);
+        }
 
         while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
             last_fix = gps_parse.fix.or(last_fix);
             let new_coords = gps_parse.reader_results.or(last_lat_lon_alt);
             last_lat_lon_alt = new_coords;
             if let Some(coords) = new_coords {
-                geo_stack.add_coords(coords);
+                geo_stack.add_coords(coords, is_recording);
             }
         }
 
         draw_coords(&last_lat_lon_alt, &mut display);
-        draw_fix_status(last_fix, &mut display);
 
-        let is_recording = {
-            let lock = shared.lock().await;
-            lock.is_recording
-        };
-
-        // draw_recording_status(is_recording, &mut display);
+        draw_recording_status(is_recording, &mut display);
+        draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
         draw_total_distance(geo_stack.total_distance, &mut display);
         draw_current_speed(geo_stack.current_speed_mph, &mut display);
-        draw_last_segment_distance(geo_stack.last_segment_distance, &mut display);
-        draw_hdop(geo_stack.current_hdop, &mut display);
+        draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
 
         display.flush().unwrap();
-
-        x = if x <= -24 { 128 } else { x - 1 };
     }
 }

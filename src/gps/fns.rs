@@ -1,9 +1,10 @@
 use libm::{atan2, cos, sin, sqrt};
 
 #[derive(Debug, Copy, Clone)]
-pub struct LatLon {
+pub struct LatLonAlt {
     pub latitude: f64,
     pub longitude: f64,
+    pub altitude: f32,
 }
 
 const EARTH_RADIUS_M: f64 = 6371000.0;
@@ -14,7 +15,7 @@ fn to_radians(degrees: f64) -> f64 {
     degrees * (core::f64::consts::PI / 180.0)
 }
 
-pub fn haversine_distance_ft(p1: LatLon, p2: LatLon) -> f64 {
+pub fn haversine_distance_ft(p1: LatLonAlt, p2: LatLonAlt) -> f64 {
     let lat1_rad = to_radians(p1.latitude);
     let lon1_rad = to_radians(p1.longitude);
     let lat2_rad = to_radians(p2.latitude);

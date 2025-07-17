@@ -1,12 +1,15 @@
 pub struct FloatToString {
     buffer: [u8; 32], // Sufficiently large buffer for most f64 representations
     len: usize,
+    precision: u8,
 }
 impl FloatToString {
-    pub fn new() -> Self {
+    pub fn new(precision: u8) -> Self {
         FloatToString {
             buffer: [0; 32],
             len: 0,
+            precision: precision,
+
         }
     }
 
@@ -52,12 +55,11 @@ impl FloatToString {
             }
 
             // Add decimal point if there's a fractional part or if we want fixed precision
-            let precision = 6; // Example precision
-            if fractional_part > 0.0 || precision > 0 {
+            if fractional_part > 0.0 && self.precision > 0 {
                 let _ = self.write_char(b'.');
 
                 // Convert fractional part to string
-                for _ in 0..precision {
+                for _ in 0..self.precision {
                     fractional_part *= 10.0;
                     let digit = fractional_part as u8;
                     let _ = self.write_char(b'0' + digit);

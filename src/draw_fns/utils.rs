@@ -9,8 +9,9 @@ use nmea::sentences::FixType;
 use ssd1306::{
     Ssd1306, mode::BufferedGraphicsMode, prelude::I2CInterface, size::DisplaySize128x64,
 };
+use heapless::String;
 
-use crate::{TEXT_STYLE_SM, draw_fns, gps::reader::GpsReaderResults, utils::float::FloatToString};
+use crate::{draw_fns, gps::reader::GpsReaderResults, utils::float::FloatToString, TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS};
 
 pub fn draw_static_text<D>(display: &mut D, lg: MonoTextStyle<BinaryColor>) -> Result<(), D::Error>
 where
@@ -22,6 +23,9 @@ where
 }
 
 pub fn draw_optional_float<D>(
+    prefix: Option<&str>,
+    suffix: Option<&str>,
+    precision: u8,
     display: &mut D,
     value: Option<impl Into<f64>>,
     x: i32,
@@ -31,9 +35,21 @@ pub fn draw_optional_float<D>(
     D: DrawTarget<Color = BinaryColor>,
 {
     if let Some(v) = value {
-        let mut float_buf = FloatToString::new();
-        let text = float_buf.convert(v.into());
-        let _ = Text::new(text, Point::new(x, y), style).draw(display);
+        let mut float_buf = FloatToString::new(precision);
+        let float_convert = float_buf.convert(v.into());
+        let mut text: String<32> = String::new();
+
+        if let Some(pre) = prefix {
+            let _ = text.push_str(pre);
+            let _ = text.push_str(" ");
+        }
+
+        let _ = text.push_str(float_convert);
+
+        if let Some(suf) = suffix {
+            let _ = text.push_str(suf);
+        }
+        let _ = Text::new(&text, Point::new(x, y), style).draw(display);
     }
 }
 
@@ -46,9 +62,9 @@ pub fn draw_coords(
     >,
 ) {
     if let Some(lat_lon_alt) = &last_lat_lon_alt {
-        draw_fns::utils::draw_optional_float(display, lat_lon_alt.lat, 0, 32, TEXT_STYLE_SM);
-        draw_fns::utils::draw_optional_float(display, lat_lon_alt.lon, 0, 40, TEXT_STYLE_SM);
-        draw_fns::utils::draw_optional_float(display, lat_lon_alt.alt, 0, 48, TEXT_STYLE_SM);
+        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.lat, 0, 32, TEXT_STYLE_XS);
+        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.lon, 0, 38, TEXT_STYLE_XS);
+        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.alt, 0, 44, TEXT_STYLE_XS);
     }
 }
 
@@ -85,21 +101,20 @@ pub fn draw_recording_status(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    let recording_state_text = if is_recording { "STOP" } else { "START" };
-    Text::new(recording_state_text, Point::new(72, 60), TEXT_STYLE_SM)
+    let recording_state_text = if is_recording { ">>" } else { "--" };
+    Text::new(recording_state_text, Point::new(0, 8), TEXT_STYLE_SM)
         .draw(display)
         .unwrap();
 }
 
-pub fn draw_moving_jo(
-    x: i32,
+pub fn draw_blinky(
     display: &mut Ssd1306<
         I2CInterface<Twim<'_, TWISPI0>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    Text::new("hijo", Point::new(x, 52), TEXT_STYLE_SM)
+    Text::new(".", Point::new(0, 63), TEXT_STYLE_SM)
         .draw(display)
         .unwrap();
 }
@@ -112,7 +127,26 @@ pub fn draw_total_distance(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(display, Some(distance_raw), 80, 60, TEXT_STYLE_SM);
+    let mut drawable_distance: f64 = distance_raw;
+    let mut drawable_precision: u8 = 0;
+    let mut drawable_unit: &str = "'";
+    if distance_raw > 5280.0 {
+        drawable_distance = distance_raw / 5280.0;
+        drawable_precision = 3;
+        drawable_unit = "mi.";
+    }
+    draw_optional_float(Some(">"), Some(drawable_unit), drawable_precision, display, Some(drawable_distance), 70, 60, TEXT_STYLE_SM);
+}
+
+pub fn draw_total_elev_gain(
+    gain_raw: f64,
+    display: &mut Ssd1306<
+        I2CInterface<Twim<'_, TWISPI0>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    >,
+) {
+    draw_optional_float(Some("^"), Some("'"), 0, display, Some(gain_raw), 70, 50, TEXT_STYLE_SM);
 }
 
 pub fn draw_current_speed(
@@ -123,7 +157,7 @@ pub fn draw_current_speed(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(display, Some(speed_raw), 80, 48, TEXT_STYLE_SM);
+    draw_optional_float(None, Some("mph"), 2, display, Some(speed_raw), 70, 36, TEXT_STYLE_MD);
 }
 
 pub fn draw_last_segment_distance(
@@ -134,10 +168,11 @@ pub fn draw_last_segment_distance(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(display, Some(distance_raw), 80, 40, TEXT_STYLE_SM);
+    draw_optional_float(None, Some("ft"), 1, display, Some(distance_raw), 70, 40, TEXT_STYLE_SM);
 }
 
 pub fn draw_hdop(
+    fix: Option<FixType>, // This is the change: it's now an Option<FixType>
     hdop_raw: f32,
     display: &mut Ssd1306<
         I2CInterface<Twim<'_, TWISPI0>>,
@@ -145,5 +180,36 @@ pub fn draw_hdop(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(display, Some(hdop_raw), 80, 32, TEXT_STYLE_SM);
+    let mut quality_text ;
+
+    match fix {
+        Some(FixType::Invalid) => {
+            quality_text = "X";
+        }
+        Some(FixType::Gps) => {
+            quality_text = "O";
+            if hdop_raw < 2.0 { quality_text = "O)" };
+            if hdop_raw < 1.0 { quality_text = "O))" };
+        },
+        Some(FixType::DGps) => {
+            quality_text = "D";
+            if hdop_raw < 2.0 { quality_text = "D)" };
+            if hdop_raw < 1.0 { quality_text = "D))" };
+        },
+        Some(FixType::FloatRtk) => {
+            quality_text = "R";
+            if hdop_raw < 1.0 { quality_text = "R)" }; // Good RTK Float (HDOP still matters)
+        },
+        Some(FixType::Rtk) => quality_text = "R))", // RTK Fixed is usually the best, HDOP might still be provided but less critical
+
+        // Handle the None case for the Option<FixType>
+        None => {
+            quality_text = "N/A"; // Or "NoFix", "---", " " to indicate no fix data at all
+        },
+        // For any other unhandled FixType that might be inside Some()
+        Some(_) => quality_text = "??",
+    }
+        Text::new(quality_text, Point::new(110, 8), TEXT_STYLE_SM)
+            .draw(display)
+            .unwrap();
 }
