@@ -138,12 +138,12 @@ pub fn draw_last_segment_distance(
 }
 
 pub fn draw_hdop(
-    distance_raw: f32,
+    hdop_raw: f32,
     display: &mut Ssd1306<
         I2CInterface<Twim<'_, TWISPI0>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(display, Some(distance_raw), 80, 32, TEXT_STYLE_SM);
+    draw_optional_float(display, Some(hdop_raw), 80, 32, TEXT_STYLE_SM);
 }
