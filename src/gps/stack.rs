@@ -27,7 +27,7 @@ impl GeoStack {
             current_speed_mph: 0.0,
             current_hdop: 0.0,
             min_time_interval_ms: 1000,
-            min_distance_threshold: 1.0,
+            min_distance_threshold: 2.0,
         }
     }
 
