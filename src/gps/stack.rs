@@ -1,3 +1,4 @@
+use chrono::Duration;
 use heapless::Vec;
 
 use crate::gps::{
@@ -13,8 +14,8 @@ pub struct GeoStack {
     pub total_distance: f64,
     pub current_speed_mph: f64,
     pub current_hdop: f32,
-    pub min_time_interval_ms: u32,
-    pub min_distance_threshold: u32,
+    pub min_time_interval_ms: i64,
+    pub min_distance_threshold: f64,
 }
 
 impl GeoStack {
@@ -26,18 +27,22 @@ impl GeoStack {
             current_speed_mph: 0.0,
             current_hdop: 0.0,
             min_time_interval_ms: 1000,
-            min_distance_threshold: 1
+            min_distance_threshold: 1.0,
         }
     }
 
     pub fn add_coords(&mut self, coords: GpsReaderResults) {
         // Make sure the new coordinates have valid lat/lon
-        if let (Some(new_lat), Some(new_lon), Some(hdop), Some(new_timestamp)) = (coords.lat, coords.lon, coords.hdop, coords.timestamp) {
+        if let (Some(new_lat), Some(new_lon), Some(hdop), Some(new_timestamp)) =
+            (coords.lat, coords.lon, coords.hdop, coords.timestamp)
+        {
             self.current_hdop = hdop;
             if let Some(last_coord) = self.stack.last() {
-                if let (Some(prev_lat), Some(prev_lon), Some(prev_timestamp)) = (last_coord.lat, last_coord.lon, last_coord.timestamp) {
+                if let (Some(prev_lat), Some(prev_lon), Some(prev_timestamp)) =
+                    (last_coord.lat, last_coord.lon, last_coord.timestamp)
+                {
                     let time_delta = new_timestamp - prev_timestamp;
-                    if time_delta < self.min_time_interval_ms {
+                    if time_delta < Duration::milliseconds(self.min_time_interval_ms) {
                         return; // Skip this reading
                     }
 
@@ -57,7 +62,8 @@ impl GeoStack {
                             let _ = self.stack.push(coords);
                             self.last_segment_distance = distance_segment_ft;
                             self.total_distance += distance_segment_ft;
-                            self.current_speed_mph = calculate_speed(distance_segment_ft, time_delta);
+                            self.current_speed_mph =
+                                calculate_speed(distance_segment_ft, time_delta.as_seconds_f64());
                         }
                     }
                 }

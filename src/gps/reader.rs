@@ -1,3 +1,4 @@
+use chrono::NaiveTime;
 use embassy_nrf::{peripherals, uarte};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
 use heapless::String;
@@ -24,7 +25,7 @@ pub struct GpsReaderResults {
     pub lon: Option<f64>,
     pub alt: Option<f32>,
     pub hdop: Option<f32>,
-    pub timestamp: Option<u64>,
+    pub timestamp: Option<NaiveTime>,
 }
 impl<'a> GpsReader<'a> {
     pub fn new(
@@ -46,7 +47,7 @@ impl<'a> GpsReader<'a> {
             lon: self.parser.longitude(),
             alt: self.parser.altitude(),
             hdop: self.parser.hdop(),
-            timestamp: self.parser.fix_timestamp()
+            timestamp: self.parser.fix_timestamp(),
         }
     }
 

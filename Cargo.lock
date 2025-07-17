@@ -518,6 +518,7 @@ dependencies = [
 name = "hijo"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
