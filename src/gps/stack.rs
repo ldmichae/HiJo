@@ -68,6 +68,7 @@ impl GeoStack {
                     }
                 }
             }
+            let _ = self.stack.push(coords);
         }
     }
 }
