@@ -27,6 +27,7 @@ pub struct GpsReaderResults {
     pub hdop: Option<f32>,
     pub timestamp: Option<NaiveTime>,
 }
+
 impl<'a> GpsReader<'a> {
     pub fn new(
         uart: uarte::Uarte<'a, peripherals::UARTE0>,

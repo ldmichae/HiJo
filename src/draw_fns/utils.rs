@@ -107,6 +107,22 @@ pub fn draw_recording_status(
         .unwrap();
 }
 
+pub fn draw_storage_status(
+    is_configured: bool,
+    display: &mut Ssd1306<
+        I2CInterface<Twim<'_, TWISPI0>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    >,
+) {
+    if is_configured {
+        let recording_state_text = "SD";
+        Text::new(recording_state_text, Point::new(0, 55), TEXT_STYLE_SM)
+        .draw(display)
+        .unwrap();
+    }
+}
+
 pub fn draw_blinky(
     display: &mut Ssd1306<
         I2CInterface<Twim<'_, TWISPI0>>,
@@ -114,7 +130,7 @@ pub fn draw_blinky(
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    Text::new(".", Point::new(0, 63), TEXT_STYLE_SM)
+    Text::new(".", Point::new(125, 63), TEXT_STYLE_SM)
         .draw(display)
         .unwrap();
 }

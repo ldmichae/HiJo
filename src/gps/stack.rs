@@ -2,7 +2,7 @@ use chrono::Duration;
 use heapless::{Deque};
 
 use crate::gps::{
-    fns::{LatLonAlt, calculate_speed, haversine_distance_ft},
+    fns::{calculate_speed, haversine_distance_ft, to_feet, LatLonAlt},
     reader::GpsReaderResults,
 };
 
@@ -12,7 +12,7 @@ pub struct GeoStack {
     pub stack: Deque<GpsReaderResults, MAX_ITEMS>,
     pub last_segment_distance: f64,
     pub total_distance: f64,
-    pub total_elevation_gain: f32,
+    pub total_elevation_gain: f64,
     pub current_speed_mph: f64,
     pub current_hdop: f32,
     pub min_time_interval_ms: i64,
@@ -74,7 +74,7 @@ impl GeoStack {
                             p2
                         );
 
-                        let alt_diff = p2.altitude - p1.altitude;
+                        let alt_diff = to_feet((p2.altitude - p1.altitude).into());
 
                         if distance_segment_ft > self.min_distance_threshold {
                             let _ = self.ring_buffer_push(coords);
