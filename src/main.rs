@@ -5,8 +5,8 @@ mod gps;
 mod utils;
 mod storage;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
-use embassy_time::{Duration, Timer};
-use embedded_sdmmc::{VolumeIdx};
+use embassy_time::{ Delay, Duration, Timer};
+use embedded_sdmmc::{SdCard};
 use panic_halt as _;
 use static_cell::StaticCell;
 
@@ -17,7 +17,7 @@ use crate::{
     gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
-    }, storage::sd::{self, SetupPins, WriteableDirectory},
+    }, storage::sd::{self, SdHardware, SetupPins},
 };
 
 use embassy_executor::Spawner;
@@ -43,7 +43,9 @@ bind_interrupts!(struct Irqs {
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
 static RECORDING_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
-static STORAGE_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static STORAGE_CONFIG: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static SD_HARDWARE: StaticCell<SdHardware> = StaticCell::new();
+
 
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
 
@@ -89,25 +91,49 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
     }
 }
 
-// Add this task function
 #[embassy_executor::task]
 async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>) {
     loop {
         // Toggle the show_jo state
         let mut show_jo_lock = show_jo_mutex.lock().await;
         *show_jo_lock = !*show_jo_lock;
-        drop(show_jo_lock); // Release the lock immediately
+        drop(show_jo_lock);
 
-        // Wait for 1 second before the next toggle
         Timer::after(Duration::from_millis(500)).await;
     }
 }
+
+#[embassy_executor::task]
+async fn sd_card_poll_task(
+    is_storage_configured_ref: &'static Mutex<NoopRawMutex, bool>,
+    sd_hardware: &'static SdHardware, // Assuming SdHardware contains your Spi object
+) {
+    let mut prev_ready = false;
+
+    loop {
+        let mut spi_dev_lock = sd_hardware.spi_dev.lock().await;
+
+        let sdcard = SdCard::new(&mut *spi_dev_lock, Delay);
+        let ready = sdcard.num_bytes().is_ok();
+        drop(spi_dev_lock);
+
+        if ready != prev_ready {
+            let mut lock = is_storage_configured_ref.lock().await;
+            *lock = ready;
+            prev_ready = ready;
+        }
+
+        Timer::after(Duration::from_secs(2)).await;
+    }
+}
+
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let recording_mutex_ref = RECORDING_STATE.init(Mutex::new(true));
     let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
-    let storage_mutex_ref = STORAGE_STATE.init(Mutex::new(true));
+    let is_storage_configured_ref = STORAGE_CONFIG.init(Mutex::new(false));
+
 
     let p = embassy_nrf::init(Default::default());
 
@@ -119,13 +145,14 @@ async fn main(spawner: Spawner) {
     let uart = uarte::Uarte::new(p.UARTE0, Irqs, p.P0_08, p.P0_06, uart_config);
 
     // set up sd card
-    let volume_mgr = sd::setup(SetupPins {
+    let sd_hardware  = sd::setup_hardware(SetupPins {
         sck: p.P1_11,
         miso: p.P1_13,
         mosi: p.P1_15,
         spi2: p.SPI2,
         output: p.P0_02,
     });
+    let sd_hardware_static = SD_HARDWARE.init(sd_hardware);
 
     // set up display
     let twim_config = twim::Config::default();
@@ -145,11 +172,10 @@ async fn main(spawner: Spawner) {
     let mut last_lat_lon_alt: Option<gps::reader::GpsReaderResults> = None;
     let mut geo_stack = GeoStack::new();
 
-    let mut writeable_directory: WriteableDirectory;
-
     spawner.spawn(button_task(button, recording_mutex_ref)).unwrap();
     spawner.spawn(gps_reader_task(gps_reader)).unwrap();
     spawner.spawn(show_jo_updater_task(blink_mutex_ref)).unwrap();
+    spawner.spawn(sd_card_poll_task(is_storage_configured_ref, sd_hardware_static)).unwrap();
 
     loop {
         let is_recording = {
@@ -162,7 +188,7 @@ async fn main(spawner: Spawner) {
             *lock
         };
         let is_storage_configured = {
-            let lock = storage_mutex_ref.lock().await;
+            let lock = is_storage_configured_ref.lock().await;
             *lock
         };
 
@@ -172,23 +198,6 @@ async fn main(spawner: Spawner) {
         draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
         if should_blink {
             draw_blinky(&mut display);
-        }
-
-        let volume_open_attempt = volume_mgr.open_volume(VolumeIdx(0));
-        match volume_open_attempt {
-            Ok(v) => {
-                let mut storage_lock = storage_mutex_ref.lock().await;
-                *storage_lock = true;
-                drop(storage_lock);
-
-                let root_dir = volume_mgr.open_root_dir(v.to_raw_volume()).expect("Could not open root directory");
-                writeable_directory = root_dir.to_directory(&volume_mgr);
-            }
-            Err(_) => {
-                let mut storage_lock = storage_mutex_ref.lock().await;
-                *storage_lock = false;
-                drop(storage_lock);
-            }
         }
 
         while let Ok(gps_parse) = gps_channel.receiver().try_receive() {

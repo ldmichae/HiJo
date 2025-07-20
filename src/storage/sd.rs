@@ -1,8 +1,8 @@
 use embassy_nrf::{gpio::{Level, Output}, peripherals::{P0_02, P1_11, P1_13, P1_15, SPI2}, spim::{self, Spim}};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Delay;
-use embedded_hal_bus::spi::ExclusiveDevice;
-use embedded_sdmmc::{BlockDevice, Directory, Error, Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use embedded_hal_bus::spi::{ExclusiveDevice};
+use embedded_sdmmc::{BlockDevice, Directory, Error, Mode, SdCard, TimeSource, Timestamp, VolumeManager};
 
 use crate::{gps::reader::GpsReaderResults, Irqs};
 
@@ -32,10 +32,12 @@ pub struct SetupPins {
 }
 
 pub type VolumeMgrConfigured = VolumeManager<SdCard<ExclusiveDevice<embassy_nrf::spim::Spim<'static, embassy_nrf::peripherals::SPI2>, Output<'static>, Delay>, Delay>, DummyTimesource>;
-pub type WriteableDirectory<'a> = Directory<'a, SdCard<ExclusiveDevice<Spim<'static, SPI2>, Output<'static>, Delay>, Delay>, DummyTimesource, 4, 4, 1>;
+pub type ConfiguredSd = SdCard<ExclusiveDevice<Spim<'static, SPI2>, Output<'static>, Delay>, Delay>;
+pub struct SdHardware {
+    pub spi_dev: Mutex<NoopRawMutex, ExclusiveDevice<Spim<'static, SPI2>, Output<'static>, Delay>>,
+}
 
-pub fn setup(p: SetupPins) -> VolumeMgrConfigured {
-    // set up spi
+pub fn setup_hardware(p: SetupPins) -> SdHardware {
     let mut spim_config = spim::Config::default();
     spim_config.mode = spim::MODE_0;
     spim_config.frequency = spim::Frequency::M8;
@@ -46,11 +48,9 @@ pub fn setup(p: SetupPins) -> VolumeMgrConfigured {
     let sd_cs = Output::new(p.output, Level::High, embassy_nrf::gpio::OutputDrive::Standard0HighDrive1);
     let spi_dev = ExclusiveDevice::new(spi_bus, sd_cs, delay);
 
-    let sdcard = SdCard::new(spi_dev, Delay);
-    let volume_mgr = VolumeManager::new(sdcard, DummyTimesource::default());
-
-    return volume_mgr
+    SdHardware { spi_dev: Mutex::new(spi_dev) }
 }
+
 
 pub fn write_coordinates<D: BlockDevice, T: TimeSource, const DIRS: usize, const FILES: usize, const VOLUMES: usize>(
     root_dir: &mut Directory<D, T, DIRS, FILES, VOLUMES>,

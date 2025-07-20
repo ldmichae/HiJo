@@ -550,6 +550,7 @@ dependencies = [
  "embassy-sync 0.7.0",
  "embassy-time",
  "embedded-graphics",
+ "embedded-hal 1.0.0",
  "embedded-hal-bus",
  "embedded-io",
  "embedded-io-async",
