@@ -6,10 +6,12 @@ use crate::gps::{
     reader::GpsReaderResults,
 };
 
-const MAX_ITEMS: usize = 16;
+const MAX_ITEMS: usize = 100;
+const STAGING_BUCKET_SIZE: usize = MAX_ITEMS / 2;
 
 pub struct GeoStack {
     pub stack: Deque<GpsReaderResults, MAX_ITEMS>,
+    pub staging_area: Deque<GpsReaderResults, STAGING_BUCKET_SIZE>,
     pub last_segment_distance: f64,
     pub total_distance: f64,
     pub total_elevation_gain: f64,
@@ -23,6 +25,7 @@ impl GeoStack {
     pub fn new() -> Self {
         GeoStack {
             stack: Deque::new(),
+            staging_area: Deque::new(),
             last_segment_distance: 0.0,
             total_distance: 0.0,
             total_elevation_gain: 0.0,
@@ -37,8 +40,21 @@ impl GeoStack {
         if !self.stack.is_full() {
             let _ = self.stack.push_back(item);
         } else {
-            Deque::pop_front(&mut self.stack);
+            let popped_item = Deque::pop_front(&mut self.stack);
+            // Add popped item to staging bucket
+            let _ = self.staging_bucket_push(popped_item.unwrap());
+            // Add new item to stack
             let _ = self.stack.push_back(item);
+        }
+    }
+
+    pub fn staging_bucket_push(&mut self, item: GpsReaderResults) {
+        if !self.staging_area.is_full() {
+            let _ = self.staging_area.push_back(item);
+        } else {
+            let popped_item = Deque::pop_front(&mut self.stack);
+            // Add popped item to staging bucket
+            let _ = self.staging_area.push_back(popped_item.unwrap()); // FUTURE ME: NOT SURE IF UNWRAP IS THE RIGHT CHOICE HERE OR NOT
         }
     }
 

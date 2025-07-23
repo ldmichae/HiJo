@@ -5,8 +5,9 @@ mod gps;
 mod utils;
 mod storage;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
-use embassy_time::{ Delay, Duration, Timer};
-use embedded_sdmmc::{SdCard};
+use embassy_time::{ Duration, Timer};
+use embedded_hal_bus::spi::ExclusiveDevice;
+use embedded_sdmmc::VolumeManager;
 use panic_halt as _;
 use static_cell::StaticCell;
 
@@ -17,12 +18,12 @@ use crate::{
     gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
-    }, storage::sd::{self, SdHardware, SetupPins},
+    }, storage::sd::{self, DummyTimesource, SdHardware, SetupPins},
 };
 
 use embassy_executor::Spawner;
 use embassy_nrf::{
-    bind_interrupts, gpio::{Input, Pull}, peripherals::{self}, spim, twim::{self, Twim}, uarte::{self, Baudrate, Parity}
+    bind_interrupts, gpio::{Input, Pin, Pull}, peripherals::{self, P0_29}, spim, twim::{self, Twim}, uarte::{self, Baudrate, Parity}
 };
 use nmea::sentences::FixType;
 
@@ -42,8 +43,8 @@ bind_interrupts!(struct Irqs {
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
 static RECORDING_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static SD_CARD_INSERTED_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
-static STORAGE_CONFIG: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static SD_HARDWARE: StaticCell<SdHardware> = StaticCell::new();
 
 
@@ -92,6 +93,24 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
 }
 
 #[embassy_executor::task]
+async fn sd_card_presence_task(button: Input<'static>, mutex: &'static Mutex<NoopRawMutex, bool>) {
+    let mut last_state = button.is_low(); // true if not pressed
+
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
+
+        if last_state != current_state {
+            // confirmed press
+            let mut lock = mutex.lock().await;
+            *lock = current_state;
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(50)).await;
+    }
+}
+
+#[embassy_executor::task]
 async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>) {
     loop {
         // Toggle the show_jo state
@@ -103,37 +122,12 @@ async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>)
     }
 }
 
-#[embassy_executor::task]
-async fn sd_card_poll_task(
-    is_storage_configured_ref: &'static Mutex<NoopRawMutex, bool>,
-    sd_hardware: &'static SdHardware, // Assuming SdHardware contains your Spi object
-) {
-    let mut prev_ready = false;
-
-    loop {
-        let mut spi_dev_lock = sd_hardware.spi_dev.lock().await;
-
-        let sdcard = SdCard::new(&mut *spi_dev_lock, Delay);
-        let ready = sdcard.num_bytes().is_ok();
-        drop(spi_dev_lock);
-
-        if ready != prev_ready {
-            let mut lock = is_storage_configured_ref.lock().await;
-            *lock = ready;
-            prev_ready = ready;
-        }
-
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
-
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let recording_mutex_ref = RECORDING_STATE.init(Mutex::new(true));
     let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
-    let is_storage_configured_ref = STORAGE_CONFIG.init(Mutex::new(false));
-
+    // let is_storage_configured_ref = STORAGE_CONFIG.init(Mutex::new(false));
+    let is_sd_card_inserted_ref = SD_CARD_INSERTED_STATE.init(Mutex::new(false));
 
     let p = embassy_nrf::init(Default::default());
 
@@ -153,7 +147,6 @@ async fn main(spawner: Spawner) {
         output: p.P0_02,
     });
     let sd_hardware_static = SD_HARDWARE.init(sd_hardware);
-
     // set up display
     let twim_config = twim::Config::default();
     let i2c = Twim::new(p.TWISPI0, Irqs, p.P0_22, p.P0_24, twim_config);
@@ -167,6 +160,7 @@ async fn main(spawner: Spawner) {
     let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
 
     let button = Input::new(p.P0_17, Pull::Up);
+    let card_detect = Input::new(p.P0_29, Pull::Up);
 
     let mut last_fix: Option<FixType> = None;
     let mut last_lat_lon_alt: Option<gps::reader::GpsReaderResults> = None;
@@ -175,7 +169,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_task(button, recording_mutex_ref)).unwrap();
     spawner.spawn(gps_reader_task(gps_reader)).unwrap();
     spawner.spawn(show_jo_updater_task(blink_mutex_ref)).unwrap();
-    spawner.spawn(sd_card_poll_task(is_storage_configured_ref, sd_hardware_static)).unwrap();
+    spawner.spawn(sd_card_presence_task(card_detect, is_sd_card_inserted_ref)).unwrap();
 
     loop {
         let is_recording = {
@@ -187,8 +181,9 @@ async fn main(spawner: Spawner) {
             let lock = blink_mutex_ref.lock().await;
             *lock
         };
-        let is_storage_configured = {
-            let lock = is_storage_configured_ref.lock().await;
+
+        let is_sd_card_inserted = {
+            let lock = is_sd_card_inserted_ref.lock().await;
             *lock
         };
 
@@ -211,7 +206,7 @@ async fn main(spawner: Spawner) {
 
         draw_recording_status(is_recording, &mut display);
         draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
-        draw_storage_status(is_storage_configured, &mut display);
+        draw_storage_status(is_sd_card_inserted, &mut display);
 
         draw_coords(&last_lat_lon_alt, &mut display);
         draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
