@@ -1,3 +1,4 @@
+use chrono::{NaiveTime, Timelike};
 use embassy_nrf::{peripherals::TWISPI0, twim::Twim};
 use embedded_graphics::{
     mono_font::MonoTextStyle,
@@ -10,6 +11,7 @@ use ssd1306::{
     Ssd1306, mode::BufferedGraphicsMode, prelude::I2CInterface, size::DisplaySize128x64,
 };
 use heapless::String;
+use core::fmt::Write;
 
 use crate::{draw_fns, gps::reader::GpsReaderResults, utils::float::FloatToString, TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS};
 
@@ -20,6 +22,19 @@ where
     Text::with_alignment("HIJO", Point::new(64, 12), lg, Alignment::Center).draw(display)?;
 
     Ok(())
+}
+
+fn format_naivetime_hhmmss(time: NaiveTime) -> String<8> {
+    let mut buf: String<8> = String::new();
+    // Write formatted time into the buffer
+    write!(
+        &mut buf,
+        "{:02}:{:02}:{:02}",
+        time.hour(),
+        time.minute(),
+        time.second()
+    ).unwrap(); // We can unwrap safely because buffer is large enough
+    buf
 }
 
 pub fn draw_optional_float<D>(
@@ -121,6 +136,22 @@ pub fn draw_storage_status(
         .draw(display)
         .unwrap();
     }
+}
+
+pub fn testing_filename_draw(
+    filename: Option<NaiveTime>,
+    display: &mut Ssd1306<
+        I2CInterface<Twim<'_, TWISPI0>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    >,
+) {
+    let unformatted_ts = filename.unwrap();
+    let ts = format_naivetime_hhmmss(unformatted_ts);
+
+    Text::new(&ts, Point::new(0, 24), TEXT_STYLE_SM)
+    .draw(display)
+    .unwrap();
 }
 
 pub fn draw_blinky(
