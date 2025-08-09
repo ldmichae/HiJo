@@ -3,6 +3,7 @@
 
 mod gps;
 mod utils;
+mod storage;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use panic_halt as _;
@@ -15,7 +16,7 @@ use crate::{
     gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
-    },
+    }, storage::sd::{self, SdHardware, SetupPins},
 };
 
 use embassy_executor::Spawner;
@@ -25,6 +26,7 @@ use embassy_nrf::{
     peripherals,
     twim::{self, Twim},
     uarte::{self, Baudrate, Parity},
+    spim,
 };
 use nmea::sentences::FixType;
 
@@ -39,12 +41,14 @@ mod draw_fns;
 bind_interrupts!(struct Irqs {
     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
     UARTE0 => uarte::InterruptHandler<peripherals::UARTE0>;
+    SPI2 => spim::InterruptHandler<peripherals::SPI2>;
 });
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
 static RECORDING_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static SD_CARD_INSERTED_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static SD_HARDWARE: StaticCell<SdHardware> = StaticCell::new();
 
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
 
@@ -139,6 +143,16 @@ async fn main(spawner: Spawner) {
     uart_config.baudrate = Baudrate::BAUD115200;
 
     let uart = uarte::Uarte::new(p.UARTE0, Irqs, p.P0_08, p.P0_06, uart_config);
+
+    // set up sd card
+    let sd_hardware  = sd::setup_hardware(SetupPins {
+        sck: p.P1_11,
+        miso: p.P1_13,
+        mosi: p.P1_15,
+        spi2: p.SPI2,
+        output: p.P0_02,
+    });
+    let sd_hardware_static = SD_HARDWARE.init(sd_hardware);
 
     // set up display
     let twim_config = twim::Config::default();
