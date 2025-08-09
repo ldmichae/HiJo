@@ -15,7 +15,7 @@ embedded-io = "0.6.0"
 embedded-io-async = "0.6.1"
 cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.0"
-nmea = { version = "0.7.0", default-features = false, features = ["GGA", "GLL"]}
+nmea = { version = "0.7.0", default-features = false, features = ["GGA"]}
 ssd1306 = { version = "0.10.0", features = ["graphics"] }
 embedded-graphics = "0.8.1"
 heapless = "0.8.0"
@@ -23,6 +23,9 @@ panic-halt = "1.0.0"
 static_cell = "2.1.1"
 libm = "0.2.15"
 chrono = { version = "0.4.41", default-features = false }
+embedded-sdmmc = "0.8.2"
+embedded-hal-bus = "0.1.0"
+embedded-hal = "1.0.0"
 
 [profile.release]
 opt-level = 1

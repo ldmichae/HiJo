@@ -10,7 +10,7 @@ use static_cell::StaticCell;
 
 use crate::{
     draw_fns::utils::{
-        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status, draw_static_text, draw_total_distance, draw_total_elev_gain
+        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status, draw_static_text, draw_storage_status, draw_total_distance, draw_total_elev_gain
     },
     gps::{
         reader::{GpsReader, ParseOut},
@@ -42,7 +42,8 @@ bind_interrupts!(struct Irqs {
 });
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
-static SHARED_STATE: StaticCell<Mutex<NoopRawMutex, SharedState>> = StaticCell::new();
+static RECORDING_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static SD_CARD_INSERTED_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
@@ -66,7 +67,7 @@ async fn gps_reader_task(gps_reader: &'static mut GpsReader<'static>) {
 }
 
 #[embassy_executor::task]
-async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SharedState>) {
+async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, bool>) {
     let mut last_state = button.is_high(); // true if not pressed
 
     loop {
@@ -80,7 +81,7 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
             if button.is_low() {
                 // confirmed press
                 let mut lock = shared.lock().await;
-                lock.is_recording = !lock.is_recording;
+                *lock = !*lock;
             }
         }
 
@@ -103,12 +104,32 @@ async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>)
     }
 }
 
+#[embassy_executor::task]
+async fn sd_card_presence_task(button: Input<'static>, mutex: &'static Mutex<NoopRawMutex, bool>) {
+    let mut last_state = button.is_low(); // true if not pressed
+
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
+
+        if last_state != current_state {
+            // confirmed press
+            let mut lock = mutex.lock().await;
+            *lock = current_state;
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(50)).await;
+    }
+}
+
+
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let shared = SHARED_STATE.init(Mutex::new(SharedState {
-        is_recording: false,
-    }));
+    let recording_mutex_ref = RECORDING_STATE.init(Mutex::new(true));
     let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
+    // let is_storage_configured_ref = STORAGE_CONFIG.init(Mutex::new(false));
+    let is_sd_card_inserted_ref = SD_CARD_INSERTED_STATE.init(Mutex::new(false));
 
     let p = embassy_nrf::init(Default::default());
 
@@ -132,6 +153,7 @@ async fn main(spawner: Spawner) {
     let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
 
     let button = Input::new(p.P0_17, Pull::Up);
+    let card_detect = Input::new(p.P0_29, Pull::Up);
 
     let mut last_fix: Option<FixType> = None;
 
@@ -139,18 +161,24 @@ async fn main(spawner: Spawner) {
 
     let mut geo_stack = GeoStack::new();
 
-    spawner.spawn(button_task(button, shared)).unwrap();
+    spawner.spawn(button_task(button, recording_mutex_ref)).unwrap();
     spawner.spawn(gps_reader_task(gps_reader)).unwrap();
     spawner.spawn(show_jo_updater_task(blink_mutex_ref)).unwrap();
+    spawner.spawn(sd_card_presence_task(card_detect, is_sd_card_inserted_ref)).unwrap();
 
     loop {
         let is_recording = {
-            let lock = shared.lock().await;
-            lock.is_recording
+            let lock = recording_mutex_ref.lock().await;
+            *lock
         };
 
         let should_blink = {
             let lock = blink_mutex_ref.lock().await;
+            *lock
+        };
+
+        let is_sd_card_inserted = {
+            let lock = is_sd_card_inserted_ref.lock().await;
             *lock
         };
 
@@ -171,13 +199,14 @@ async fn main(spawner: Spawner) {
             }
         }
 
-        draw_coords(&last_lat_lon_alt, &mut display);
-
         draw_recording_status(is_recording, &mut display);
+        draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
+        draw_storage_status(is_sd_card_inserted, &mut display);
+
+        draw_coords(&last_lat_lon_alt, &mut display);
         draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
         draw_total_distance(geo_stack.total_distance, &mut display);
         draw_current_speed(geo_stack.current_speed_mph, &mut display);
-        draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
 
         display.flush().unwrap();
     }

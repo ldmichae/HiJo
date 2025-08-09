@@ -1,4 +1,5 @@
 use libm::{atan2, cos, sin, sqrt};
+use core::fmt::Error;
 
 #[derive(Debug, Copy, Clone)]
 pub struct LatLonAlt {
@@ -41,4 +42,8 @@ pub fn calculate_speed(distance_ft: f64, time_secs: f64) -> f64 {
     }
     let speed_fps = distance_ft / time_secs;
     speed_fps * fps_to_mph_conversion_factor
+}
+
+pub fn to_feet(meters: f64) -> f64 {
+    return FT_PER_METER * meters;
 }
