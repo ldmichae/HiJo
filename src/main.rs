@@ -155,19 +155,7 @@ async fn main(spawner: Spawner) {
         draw_static_text(&mut display, TEXT_STYLE_MD).unwrap();
 
         while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
-            if let Some(fix) = gps_parse.fix {
-                match fix {
-                    FixType::Invalid => defmt::info!("INVALID SIGNAL"),
-                    FixType::Gps => defmt::info!("GPS"),
-                    FixType::DGps => defmt::info!("DGPS"),
-                    FixType::Estimated => defmt::info!("ESTIMATED"),
-                    FixType::FloatRtk => defmt::info!("FLOATRTK"),
-                    FixType::Manual => defmt::info!("MANUAL"),
-                    FixType::Pps => defmt::info!("PPS"),
-                    FixType::Rtk => defmt::info!("RTK"),
-                    FixType::Simulation => defmt::info!("SIMULATION"),
-                }
-            } else if let Some(dt) = gps_parse.reader_datetime {
+            if let Some(dt) = gps_parse.reader_datetime {
                 defmt::info!("ZDA SENTENCE PARSED {} - {}", dt.pretty_date.as_str(), dt.pretty_time.as_str());
                 last_datetime = Some(dt);
             } else {
