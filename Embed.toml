@@ -1,0 +1,5 @@
+[default.general]
+chip = "nRF5340_xxAA"
+
+[default.rtt]
+enabled = true

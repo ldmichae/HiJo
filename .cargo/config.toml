@@ -1,0 +1,3 @@
+# Setup default target for the nrf5340 Cortex-M33 cpu
+[build]
+target = "thumbv8m.main-none-eabihf"
