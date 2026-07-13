@@ -3,14 +3,18 @@
 
 mod gps;
 mod utils;
+use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
-use panic_halt as _;
 use static_cell::StaticCell;
+
+use defmt_rtt as _;
+use panic_probe as _;
 
 use crate::{
     draw_fns::utils::{
-        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status, draw_static_text, draw_total_distance, draw_total_elev_gain
+        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status,
+        draw_static_text, draw_total_distance, draw_total_elev_gain,
     },
     gps::{
         reader::{GpsReader, ParseOut},
@@ -20,16 +24,14 @@ use crate::{
 
 use embassy_executor::Spawner;
 use embassy_nrf::{
-    bind_interrupts,
-    gpio::{Input, Pull},
-    peripherals,
-    twim::{self, Twim},
-    uarte::{self, Baudrate, Parity},
+    bind_interrupts, buffered_uarte::{self, BufferedUarte}, gpio::{Input, Pull}, peripherals::{self}, twim::{self, Twim}, uarte::{self, Baudrate, Parity},
 };
 use nmea::sentences::FixType;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_10X20, iso_8859_15::FONT_5X8, ascii::FONT_6X13, ascii::FONT_4X6},
+    mono_font::{
+        MonoTextStyle, ascii::FONT_4X6, ascii::FONT_6X13, ascii::FONT_10X20, iso_8859_15::FONT_5X8,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
 };
@@ -37,8 +39,8 @@ use embedded_graphics::{
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 mod draw_fns;
 bind_interrupts!(struct Irqs {
-    TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
-    UARTE0 => uarte::InterruptHandler<peripherals::UARTE0>;
+    SERIAL0 => twim::InterruptHandler<peripherals::SERIAL0>;
+    SERIAL1 => buffered_uarte::InterruptHandler<peripherals::SERIAL1>;
 });
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
@@ -103,6 +105,9 @@ async fn show_jo_updater_task(show_jo_mutex: &'static Mutex<NoopRawMutex, bool>)
     }
 }
 
+static RX_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
+static TX_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let shared = SHARED_STATE.init(Mutex::new(SharedState {
@@ -114,24 +119,54 @@ async fn main(spawner: Spawner) {
 
     // set up uarte
     let mut uart_config = uarte::Config::default();
-    uart_config.parity = Parity::EXCLUDED;
-    uart_config.baudrate = Baudrate::BAUD115200;
+    uart_config.parity = Parity::Excluded;
+    uart_config.baudrate = Baudrate::Baud115200;
 
-    let uart = uarte::Uarte::new(p.UARTE0, Irqs, p.P0_08, p.P0_06, uart_config);
+    let rx_buffer = RX_BUFFER.init([0u8; 256]);
+    let tx_buffer = TX_BUFFER.init([0u8; 256]);
+
+    let uart = BufferedUarte::new(
+        p.SERIAL1,
+        p.TIMER0,
+        p.PPI_CH1,
+        p.PPI_CH2,
+        p.PPI_GROUP0,
+        p.P0_08,
+        p.P0_06,
+        Irqs,
+        uart_config,
+        &mut rx_buffer[..],
+        &mut tx_buffer[..]);
+
+    let serial_port = p.SERIAL0;
+    let sda_pin = p.P1_12;
+    let scl_pin = p.P1_14;
 
     // set up display
     let twim_config = twim::Config::default();
-    let i2c = Twim::new(p.TWISPI0, Irqs, p.P0_22, p.P0_24, twim_config);
-
-    let interface = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+    let mut tx_ram_buffer: [u8; 64] = [0; 64];
+    let my_twim = Twim::new(
+        serial_port,
+        Irqs,
+        sda_pin,
+        scl_pin,
+        twim_config,
+        &mut tx_ram_buffer,
+    );
+    let interface = I2CDisplayInterface::new(my_twim);
+    let mut display: Ssd1306<
+        ssd1306::prelude::I2CInterface<Twim<'_>>,
+        DisplaySize128x64,
+        ssd1306::mode::BufferedGraphicsMode<DisplaySize128x64>,
+    > = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     display.init().unwrap();
 
     let gps_channel = CHANNEL.init(Channel::new());
+    let gps_receiver = gps_channel.receiver();
     let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
 
-    let button = Input::new(p.P0_17, Pull::Up);
+    let button = Input::new(p.P0_23, Pull::Up);
 
     let mut last_fix: Option<FixType> = None;
 
@@ -139,9 +174,9 @@ async fn main(spawner: Spawner) {
 
     let mut geo_stack = GeoStack::new();
 
-    spawner.spawn(button_task(button, shared)).unwrap();
-    spawner.spawn(gps_reader_task(gps_reader)).unwrap();
-    spawner.spawn(show_jo_updater_task(blink_mutex_ref)).unwrap();
+    spawner.spawn(button_task(button, shared).unwrap());
+    spawner.spawn(gps_reader_task(gps_reader).unwrap());
+    spawner.spawn(show_jo_updater_task(blink_mutex_ref).unwrap());
 
     loop {
         let is_recording = {
@@ -154,31 +189,34 @@ async fn main(spawner: Spawner) {
             *lock
         };
 
-        Timer::after(Duration::from_millis(100)).await;
-        display.clear(BinaryColor::Off).unwrap();
+        let draw_future = Timer::after(Duration::from_millis(100));
+        let gps_future = gps_receiver.receive();
+        match select(draw_future, gps_future).await {
+            Either::First(_) => {
+                display.clear(BinaryColor::Off).unwrap();
 
-        draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
-        if should_blink {
-            draw_blinky(&mut display);
-        }
+                draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
+                if should_blink {
+                    draw_blinky(&mut display);
+                }
+                draw_coords(&last_lat_lon_alt, &mut display);
 
-        while let Ok(gps_parse) = gps_channel.receiver().try_receive() {
-            last_fix = gps_parse.fix.or(last_fix);
-            let new_coords = gps_parse.reader_results.or(last_lat_lon_alt);
-            last_lat_lon_alt = new_coords;
-            if let Some(coords) = new_coords {
-                geo_stack.add_coords(coords, is_recording);
+                draw_recording_status(is_recording, &mut display);
+                draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
+                draw_total_distance(geo_stack.total_distance, &mut display);
+                draw_current_speed(geo_stack.current_speed_mph, &mut display);
+                draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
+
+                display.flush().unwrap();
+            }
+            Either::Second(gps_parse) => {
+                last_fix = gps_parse.fix.or(last_fix);
+                let new_coords = gps_parse.reader_results.or(last_lat_lon_alt);
+                last_lat_lon_alt = new_coords;
+                if let Some(coords) = new_coords {
+                    geo_stack.add_coords(coords, is_recording);
+                }
             }
         }
-
-        draw_coords(&last_lat_lon_alt, &mut display);
-
-        draw_recording_status(is_recording, &mut display);
-        draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
-        draw_total_distance(geo_stack.total_distance, &mut display);
-        draw_current_speed(geo_stack.current_speed_mph, &mut display);
-        draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
-
-        display.flush().unwrap();
     }
 }

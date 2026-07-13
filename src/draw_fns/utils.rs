@@ -1,17 +1,20 @@
-use embassy_nrf::{peripherals::TWISPI0, twim::Twim};
+use embassy_nrf::twim::Twim;
 use embedded_graphics::{
     mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Text},
 };
+use heapless::String;
 use nmea::sentences::FixType;
 use ssd1306::{
     Ssd1306, mode::BufferedGraphicsMode, prelude::I2CInterface, size::DisplaySize128x64,
 };
-use heapless::String;
 
-use crate::{draw_fns, gps::reader::GpsReaderResults, utils::float::FloatToString, TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS};
+use crate::{
+    TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS, draw_fns, gps::reader::GpsReaderResults,
+    utils::float::FloatToString,
+};
 
 pub fn draw_static_text<D>(display: &mut D, lg: MonoTextStyle<BinaryColor>) -> Result<(), D::Error>
 where
@@ -56,22 +59,49 @@ pub fn draw_optional_float<D>(
 pub fn draw_coords(
     last_lat_lon_alt: &Option<GpsReaderResults>,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
     if let Some(lat_lon_alt) = &last_lat_lon_alt {
-        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.lat, 0, 32, TEXT_STYLE_XS);
-        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.lon, 0, 38, TEXT_STYLE_XS);
-        draw_fns::utils::draw_optional_float(None, None, 6, display, lat_lon_alt.alt, 0, 44, TEXT_STYLE_XS);
+        draw_fns::utils::draw_optional_float(
+            None,
+            None,
+            6,
+            display,
+            lat_lon_alt.lat,
+            0,
+            32,
+            TEXT_STYLE_XS,
+        );
+        draw_fns::utils::draw_optional_float(
+            None,
+            None,
+            6,
+            display,
+            lat_lon_alt.lon,
+            0,
+            38,
+            TEXT_STYLE_XS,
+        );
+        draw_fns::utils::draw_optional_float(
+            None,
+            None,
+            6,
+            display,
+            lat_lon_alt.alt,
+            0,
+            44,
+            TEXT_STYLE_XS,
+        );
     }
 }
 
 pub fn draw_fix_status(
     last_fix: Option<FixType>,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
@@ -96,7 +126,7 @@ pub fn draw_fix_status(
 pub fn draw_recording_status(
     is_recording: bool,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
@@ -109,7 +139,7 @@ pub fn draw_recording_status(
 
 pub fn draw_blinky(
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
@@ -122,7 +152,7 @@ pub fn draw_blinky(
 pub fn draw_total_distance(
     distance_raw: f64,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
@@ -135,52 +165,88 @@ pub fn draw_total_distance(
         drawable_precision = 3;
         drawable_unit = "mi.";
     }
-    draw_optional_float(Some(">"), Some(drawable_unit), drawable_precision, display, Some(drawable_distance), 70, 60, TEXT_STYLE_SM);
+    draw_optional_float(
+        Some(">"),
+        Some(drawable_unit),
+        drawable_precision,
+        display,
+        Some(drawable_distance),
+        70,
+        60,
+        TEXT_STYLE_SM,
+    );
 }
 
 pub fn draw_total_elev_gain(
     gain_raw: f64,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(Some("^"), Some("'"), 0, display, Some(gain_raw), 70, 50, TEXT_STYLE_SM);
+    draw_optional_float(
+        Some("^"),
+        Some("'"),
+        0,
+        display,
+        Some(gain_raw),
+        70,
+        50,
+        TEXT_STYLE_SM,
+    );
 }
 
 pub fn draw_current_speed(
     speed_raw: f64,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(None, Some("mph"), 2, display, Some(speed_raw), 70, 36, TEXT_STYLE_MD);
+    draw_optional_float(
+        None,
+        Some("mph"),
+        2,
+        display,
+        Some(speed_raw),
+        70,
+        36,
+        TEXT_STYLE_MD,
+    );
 }
 
 pub fn draw_last_segment_distance(
     distance_raw: f64,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    draw_optional_float(None, Some("ft"), 1, display, Some(distance_raw), 70, 40, TEXT_STYLE_SM);
+    draw_optional_float(
+        None,
+        Some("ft"),
+        1,
+        display,
+        Some(distance_raw),
+        70,
+        40,
+        TEXT_STYLE_SM,
+    );
 }
 
 pub fn draw_hdop(
     fix: Option<FixType>, // This is the change: it's now an Option<FixType>
     hdop_raw: f32,
     display: &mut Ssd1306<
-        I2CInterface<Twim<'_, TWISPI0>>,
+        I2CInterface<Twim<'_>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
 ) {
-    let mut quality_text ;
+    let mut quality_text;
 
     match fix {
         Some(FixType::Invalid) => {
@@ -188,28 +254,38 @@ pub fn draw_hdop(
         }
         Some(FixType::Gps) => {
             quality_text = "O";
-            if hdop_raw < 2.0 { quality_text = "O)" };
-            if hdop_raw < 1.0 { quality_text = "O))" };
-        },
+            if hdop_raw < 2.0 {
+                quality_text = "O)"
+            };
+            if hdop_raw < 1.0 {
+                quality_text = "O))"
+            };
+        }
         Some(FixType::DGps) => {
             quality_text = "D";
-            if hdop_raw < 2.0 { quality_text = "D)" };
-            if hdop_raw < 1.0 { quality_text = "D))" };
-        },
+            if hdop_raw < 2.0 {
+                quality_text = "D)"
+            };
+            if hdop_raw < 1.0 {
+                quality_text = "D))"
+            };
+        }
         Some(FixType::FloatRtk) => {
             quality_text = "R";
-            if hdop_raw < 1.0 { quality_text = "R)" }; // Good RTK Float (HDOP still matters)
-        },
+            if hdop_raw < 1.0 {
+                quality_text = "R)"
+            }; // Good RTK Float (HDOP still matters)
+        }
         Some(FixType::Rtk) => quality_text = "R))", // RTK Fixed is usually the best, HDOP might still be provided but less critical
 
         // Handle the None case for the Option<FixType>
         None => {
             quality_text = "N/A"; // Or "NoFix", "---", " " to indicate no fix data at all
-        },
+        }
         // For any other unhandled FixType that might be inside Some()
         Some(_) => quality_text = "??",
     }
-        Text::new(quality_text, Point::new(110, 8), TEXT_STYLE_SM)
-            .draw(display)
-            .unwrap();
+    Text::new(quality_text, Point::new(110, 8), TEXT_STYLE_SM)
+        .draw(display)
+        .unwrap();
 }

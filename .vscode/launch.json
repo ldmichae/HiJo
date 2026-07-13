@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "preLaunchTask": "${defaultBuildTask}",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "name": "probe_rs Executable Test",
+      "allowEraseAll": true,
+      "flashingConfig": {
+        "flashingEnabled": true,
+      },
+      "chip": "nrf5340_xxAA",
+      "coreConfigs": [
+        {
+          "programBinary": "target/thumbv8m.main-none-eabihf/debug/hijo"
+        }
+      ]
+    }
+  ]
+}

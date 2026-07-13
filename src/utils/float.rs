@@ -8,8 +8,7 @@ impl FloatToString {
         FloatToString {
             buffer: [0; 32],
             len: 0,
-            precision: precision,
-
+            precision,
         }
     }
 

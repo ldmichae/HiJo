@@ -1,5 +1,5 @@
 use chrono::Duration;
-use heapless::{Deque};
+use heapless::Deque;
 
 use crate::gps::{
     fns::{LatLonAlt, calculate_speed, haversine_distance_ft},
@@ -44,14 +44,21 @@ impl GeoStack {
 
     pub fn add_coords(&mut self, coords: GpsReaderResults, is_recording: bool) {
         // Make sure the new coordinates have valid lat/lon
-        if let (Some(new_lat), Some(new_lon), Some(new_alt), Some(hdop), Some(new_timestamp)) =
-            (coords.lat, coords.lon, coords.alt, coords.hdop, coords.timestamp)
-        {
+        if let (Some(new_lat), Some(new_lon), Some(new_alt), Some(hdop), Some(new_timestamp)) = (
+            coords.lat,
+            coords.lon,
+            coords.alt,
+            coords.hdop,
+            coords.timestamp,
+        ) {
             self.current_hdop = hdop;
             if let Some(last_coord) = self.stack.back() {
-                if let (Some(prev_lat), Some(prev_lon), Some(prev_alt), Some(prev_timestamp)) =
-                    (last_coord.lat, last_coord.lon, last_coord.alt, last_coord.timestamp)
-                {
+                if let (Some(prev_lat), Some(prev_lon), Some(prev_alt), Some(prev_timestamp)) = (
+                    last_coord.lat,
+                    last_coord.lon,
+                    last_coord.alt,
+                    last_coord.timestamp,
+                ) {
                     let time_delta = new_timestamp - prev_timestamp;
                     if time_delta < Duration::milliseconds(self.min_time_interval_ms) {
                         return; // Skip this reading
@@ -59,37 +66,36 @@ impl GeoStack {
 
                     if hdop < 2.0 {
                         let p1 = LatLonAlt {
-                                latitude: prev_lat,
-                                longitude: prev_lon,
-                                altitude: prev_alt,
-                            };
+                            latitude: prev_lat,
+                            longitude: prev_lon,
+                            altitude: prev_alt,
+                        };
                         let p2 = LatLonAlt {
-                                latitude: new_lat,
-                                longitude: new_lon,
-                                altitude: new_alt,
-                            };
+                            latitude: new_lat,
+                            longitude: new_lon,
+                            altitude: new_alt,
+                        };
 
-                        let distance_segment_ft = haversine_distance_ft(
-                            p1,
-                            p2
-                        );
+                        let distance_segment_ft = haversine_distance_ft(p1, p2);
 
                         let alt_diff = p2.altitude - p1.altitude;
 
                         if distance_segment_ft > self.min_distance_threshold {
-                            let _ = self.ring_buffer_push(coords);
+                            self.ring_buffer_push(coords);
                             self.current_speed_mph =
-                            calculate_speed(distance_segment_ft, time_delta.as_seconds_f64());
+                                calculate_speed(distance_segment_ft, time_delta.as_seconds_f64());
                             if is_recording {
                                 self.last_segment_distance = distance_segment_ft;
                                 self.total_distance += distance_segment_ft;
-                                if alt_diff > 0.0 { self.total_elevation_gain += alt_diff}
+                                if alt_diff > 0.0 {
+                                    self.total_elevation_gain += alt_diff
+                                }
                             }
                         }
                     }
                 }
             } else {
-                let _ = self.ring_buffer_push(coords);
+                self.ring_buffer_push(coords);
             }
         }
     }
