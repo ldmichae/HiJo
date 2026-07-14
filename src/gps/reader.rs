@@ -1,5 +1,4 @@
 use chrono::NaiveTime;
-use defmt::info;
 use embassy_nrf::buffered_uarte::BufferedUarte;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
 use heapless::Vec;
@@ -53,7 +52,7 @@ impl<'a> GpsReader<'a> {
 
     fn parse_line(&mut self, line: Vec<u8, 82>) -> Option<ParseOut> {
         let msg = heapless::String::<82>::from(line.iter().map(|x| *x as char).collect());
-        info!("MSG: {:?}", defmt::Debug2Format(&msg));
+        // info!("MSG: {:?}", defmt::Debug2Format(&msg));
         if line.starts_with(&[b'$']) && line.contains(&b'*') {
             match self.parser.parse(&msg) {
                 Ok(_) => {

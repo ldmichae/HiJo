@@ -29,7 +29,7 @@ impl GeoStack {
             current_speed_mph: 0.0,
             current_hdop: 0.0,
             min_time_interval_ms: 1000,
-            min_distance_threshold: 2.0,
+            min_distance_threshold: 0.0,
         }
     }
 
@@ -42,29 +42,30 @@ impl GeoStack {
         }
     }
 
-    pub fn add_coords(&mut self, coords: GpsReaderResults, is_recording: bool) {
-        // Make sure the new coordinates have valid lat/lon
-        if let (Some(new_lat), Some(new_lon), Some(new_alt), Some(hdop), Some(new_timestamp)) = (
-            coords.lat,
-            coords.lon,
-            coords.alt,
-            coords.hdop,
-            coords.timestamp,
-        ) {
-            self.current_hdop = hdop;
+    pub fn add_coords(&mut self, coords: GpsReaderResults, mut _last_lla: Option<GpsReaderResults>, is_recording: bool) {
+        if let GpsReaderResults {
+            lat: Some(new_lat),
+            lon: Some(new_lon),
+            alt: Some(new_alt),
+            hdop: Some(new_hdop),
+            timestamp: Some(new_timestamp)
+        } = coords {
+            self.current_hdop = new_hdop;
             if let Some(last_coord) = self.stack.back() {
-                if let (Some(prev_lat), Some(prev_lon), Some(prev_alt), Some(prev_timestamp)) = (
-                    last_coord.lat,
-                    last_coord.lon,
-                    last_coord.alt,
-                    last_coord.timestamp,
-                ) {
+                if let GpsReaderResults {
+                    lat: Some(prev_lat),
+                    lon: Some(prev_lon),
+                    alt: Some(prev_alt),
+                    hdop: Some(_prev_hdop),
+                    timestamp: Some(prev_timestamp)
+                } = *last_coord {
                     let time_delta = new_timestamp - prev_timestamp;
                     if time_delta < Duration::milliseconds(self.min_time_interval_ms) {
-                        return; // Skip this reading
+                        return;
                     }
 
-                    if hdop < 2.0 {
+                    if new_hdop < 5.0 {
+                        _last_lla = Some(coords);
                         let p1 = LatLonAlt {
                             latitude: prev_lat,
                             longitude: prev_lon,
@@ -80,17 +81,21 @@ impl GeoStack {
 
                         let alt_diff = p2.altitude - p1.altitude;
 
+                        self.ring_buffer_push(coords);
+
+                         if is_recording {
+                            self.last_segment_distance = distance_segment_ft;
+                            self.total_distance += distance_segment_ft;
+                            if alt_diff > 0.0 {
+                                self.total_elevation_gain += alt_diff
+                            }
+                        }
+
                         if distance_segment_ft > self.min_distance_threshold {
-                            self.ring_buffer_push(coords);
                             self.current_speed_mph =
                                 calculate_speed(distance_segment_ft, time_delta.as_seconds_f64());
-                            if is_recording {
-                                self.last_segment_distance = distance_segment_ft;
-                                self.total_distance += distance_segment_ft;
-                                if alt_diff > 0.0 {
-                                    self.total_elevation_gain += alt_diff
-                                }
-                            }
+                        } else {
+                            self.current_speed_mph = 0.0;
                         }
                     }
                 }

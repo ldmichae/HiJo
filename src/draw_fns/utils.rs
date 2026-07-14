@@ -253,12 +253,18 @@ pub fn draw_hdop(
             quality_text = "X";
         }
         Some(FixType::Gps) => {
-            quality_text = "O";
-            if hdop_raw < 2.0 {
+            quality_text = "LQ";
+            if hdop_raw < 10.0 {
+                quality_text = "O"
+            };
+            if hdop_raw < 5.0 {
                 quality_text = "O)"
             };
-            if hdop_raw < 1.0 {
+            if hdop_raw < 2.0 {
                 quality_text = "O))"
+            };
+            if hdop_raw < 1.0 {
+                quality_text = "HQ"
             };
         }
         Some(FixType::DGps) => {

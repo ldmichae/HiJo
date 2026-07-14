@@ -6,17 +6,17 @@ mod utils;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
+use heapless::{String, Vec};
 use static_cell::StaticCell;
 
 use defmt_rtt as _;
 use panic_probe as _;
 
 use crate::{
-    draw_fns::utils::{
+    Page::{RECORD, SETTINGS}, draw_fns::{settings::draw_settings, utils::{
         draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status,
         draw_static_text, draw_total_distance, draw_total_elev_gain,
-    },
-    gps::{
+    }}, gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
     },
@@ -45,6 +45,7 @@ bind_interrupts!(struct Irqs {
 
 static CHANNEL: StaticCell<Channel<NoopRawMutex, ParseOut, 1>> = StaticCell::new();
 static SHARED_STATE: StaticCell<Mutex<NoopRawMutex, SharedState>> = StaticCell::new();
+static SETTINGS_STATE: StaticCell<Mutex<NoopRawMutex, SettingsState>> = StaticCell::new();
 static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
@@ -58,8 +59,20 @@ const TEXT_STYLE_SM: MonoTextStyle<'_, BinaryColor> =
 const TEXT_STYLE_XS: MonoTextStyle<'_, BinaryColor> =
     MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Page {
+    RECORD,
+    SETTINGS
+}
+
 pub struct SharedState {
     pub is_recording: bool,
+    pub page: Page
+}
+
+pub struct SettingsState {
+    pub cursor_pos: usize,
+    pub items: Vec<String<16>, 2>
 }
 
 #[embassy_executor::task]
@@ -82,7 +95,83 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
             if button.is_low() {
                 // confirmed press
                 let mut lock = shared.lock().await;
+                if lock.page != RECORD { return };
                 lock.is_recording = !lock.is_recording;
+            }
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn page_button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SharedState>) {
+    let mut last_state = button.is_high(); // true if not pressed
+
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
+
+        if last_state && !current_state {
+            // falling edge: just pressed
+            // debounce
+            Timer::after(Duration::from_millis(20)).await;
+
+            if button.is_low() {
+                // confirmed press
+                let mut lock = shared.lock().await;
+                let next_page = if lock.page == SETTINGS { RECORD } else {SETTINGS};
+                lock.page = next_page;
+            }
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn cursor_up_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SettingsState>) {
+    let mut last_state = button.is_high(); // true if not pressed
+
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
+
+        if last_state && !current_state {
+            // falling edge: just pressed
+            // debounce
+            Timer::after(Duration::from_millis(20)).await;
+
+            if button.is_low() {
+                // confirmed press
+                let mut lock = shared.lock().await;
+                if lock.cursor_pos > 0 {
+                    lock.cursor_pos = (lock.cursor_pos - 1) % lock.items.len();
+                }
+            }
+        }
+
+        last_state = current_state;
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn cursor_down_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SettingsState>) {
+    let mut last_state = button.is_high(); // true if not pressed
+
+    loop {
+        let current_state = button.is_high(); // still true if not pressed
+
+        if last_state && !current_state {
+            // falling edge: just pressed
+            // debounce
+            Timer::after(Duration::from_millis(20)).await;
+
+            if button.is_low() {
+                // confirmed press
+                let mut lock = shared.lock().await;
+                lock.cursor_pos = (lock.cursor_pos + 1) % lock.items.len();
             }
         }
 
@@ -110,9 +199,22 @@ static TX_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    let auto_pause_string: String<16> = String::try_from("Auto Pause").unwrap();
+    let time_zone: String<16> = String::try_from("Time Zone").unwrap();
+
     let shared = SHARED_STATE.init(Mutex::new(SharedState {
         is_recording: false,
+        page: RECORD
     }));
+
+    let settings_state = SETTINGS_STATE.init(Mutex::new(SettingsState {
+        cursor_pos: 0,
+        items: Vec::from_slice(
+            &[auto_pause_string,
+            time_zone]
+        ).unwrap()
+    }));
+
     let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
 
     let p = embassy_nrf::init(Default::default());
@@ -131,7 +233,7 @@ async fn main(spawner: Spawner) {
         p.PPI_CH1,
         p.PPI_CH2,
         p.PPI_GROUP0,
-        p.P0_08,
+        p.P1_09,
         p.P0_06,
         Irqs,
         uart_config,
@@ -166,7 +268,10 @@ async fn main(spawner: Spawner) {
     let gps_receiver = gps_channel.receiver();
     let gps_reader = GPS_READER.init(GpsReader::new(uart, gps_channel.sender()));
 
-    let button = Input::new(p.P0_23, Pull::Up);
+    let record_button = Input::new(p.P0_23, Pull::Up);
+    let page_button = Input::new(p.P0_08, Pull::Up);
+    let cursor_up_button = Input::new(p.P0_24, Pull::Up);
+    let cursor_down_button = Input::new(p.P0_09, Pull::Up);
 
     let mut last_fix: Option<FixType> = None;
 
@@ -174,14 +279,17 @@ async fn main(spawner: Spawner) {
 
     let mut geo_stack = GeoStack::new();
 
-    spawner.spawn(button_task(button, shared).unwrap());
+    spawner.spawn(page_button_task(page_button, shared).unwrap());
+    spawner.spawn(button_task(record_button, shared).unwrap());
+    spawner.spawn(cursor_up_task(cursor_up_button, settings_state).unwrap());
+    spawner.spawn(cursor_down_task(cursor_down_button, settings_state).unwrap());
     spawner.spawn(gps_reader_task(gps_reader).unwrap());
     spawner.spawn(show_jo_updater_task(blink_mutex_ref).unwrap());
 
     loop {
-        let is_recording = {
+        let (is_recording, page) = {
             let lock = shared.lock().await;
-            lock.is_recording
+            (lock.is_recording, lock.page)
         };
 
         let should_blink = {
@@ -196,25 +304,31 @@ async fn main(spawner: Spawner) {
                 display.clear(BinaryColor::Off).unwrap();
 
                 draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
-                if should_blink {
-                    draw_blinky(&mut display);
-                }
-                draw_coords(&last_lat_lon_alt, &mut display);
 
-                draw_recording_status(is_recording, &mut display);
-                draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
-                draw_total_distance(geo_stack.total_distance, &mut display);
-                draw_current_speed(geo_stack.current_speed_mph, &mut display);
-                draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
+                if page == RECORD {
+
+                    if should_blink {
+                        draw_blinky(&mut display);
+                    }
+                    draw_coords(&last_lat_lon_alt, &mut display);
+
+                    draw_recording_status(is_recording, &mut display);
+                    draw_total_elev_gain(geo_stack.total_elevation_gain.into(), &mut display);
+                    draw_total_distance(geo_stack.total_distance, &mut display);
+                    draw_current_speed(geo_stack.current_speed_mph, &mut display);
+                    draw_hdop(last_fix, geo_stack.current_hdop, &mut display);
+                } else if page == SETTINGS {
+                    draw_settings(&mut display, &settings_state).await;
+                }
 
                 display.flush().unwrap();
             }
             Either::Second(gps_parse) => {
                 last_fix = gps_parse.fix.or(last_fix);
-                let new_coords = gps_parse.reader_results.or(last_lat_lon_alt);
-                last_lat_lon_alt = new_coords;
+                let new_coords = gps_parse.reader_results;
                 if let Some(coords) = new_coords {
-                    geo_stack.add_coords(coords, is_recording);
+                    last_lat_lon_alt = new_coords;
+                    geo_stack.add_coords(coords, last_lat_lon_alt, is_recording);
                 }
             }
         }
