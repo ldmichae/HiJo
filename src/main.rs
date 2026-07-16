@@ -3,28 +3,40 @@
 
 mod gps;
 mod utils;
+use defmt::info;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
-use heapless::{String, Vec};
 use static_cell::StaticCell;
 
 use defmt_rtt as _;
 use panic_probe as _;
 
 use crate::{
-    Page::{RECORD, SETTINGS}, draw_fns::{settings::draw_settings, utils::{
-        draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status,
-        draw_static_text, draw_total_distance, draw_total_elev_gain,
-    }}, gps::{
+    Page::{RECORD, SETTINGS},
+    draw_fns::{
+        settings::draw_settings,
+        utils::{
+            draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status,
+            draw_static_text, draw_total_distance, draw_total_elev_gain,
+        },
+    },
+    gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
     },
+    utils::vector::CircularTracker,
 };
 
 use embassy_executor::Spawner;
 use embassy_nrf::{
-    bind_interrupts, buffered_uarte::{self, BufferedUarte}, gpio::{Input, Pull}, peripherals::{self}, twim::{self, Twim}, uarte::{self, Baudrate, Parity},
+    bind_interrupts,
+    buffered_uarte::{self, BufferedUarte},
+    gpio::{Input, Pull},
+    nvmc::Nvmc,
+    peripherals::{self},
+    twim::{self, Twim},
+    uarte::{self, Baudrate, Parity},
 };
 use nmea::sentences::FixType;
 
@@ -60,20 +72,32 @@ const TEXT_STYLE_XS: MonoTextStyle<'_, BinaryColor> =
     MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-    pub enum Page {
+pub enum Page {
     RECORD,
-    SETTINGS
+    SETTINGS,
 }
 
 pub struct SharedState {
     pub is_recording: bool,
-    pub page: Page
+    pub page: Page,
 }
 
-pub struct SettingsState {
-    pub cursor_pos: usize,
-    pub items: Vec<String<16>, 2>
+#[derive(Copy, Clone, Debug)]
+pub struct Setting<T: Copy + Default> {
+    pub label: &'static str,
+    pub options: CircularTracker<(&'static str, T), 8>,
 }
+
+#[derive(Copy, Clone, Default, Debug)]
+pub enum SettingsWrapper {
+    #[default]
+    Default,
+    Bool(Setting<bool>),
+    Text(Setting<&'static str>),
+    AnyNumber(Setting<isize>),
+}
+
+type SettingsState = CircularTracker<SettingsWrapper, 2>;
 
 #[embassy_executor::task]
 async fn gps_reader_task(gps_reader: &'static mut GpsReader<'static>) {
@@ -81,7 +105,11 @@ async fn gps_reader_task(gps_reader: &'static mut GpsReader<'static>) {
 }
 
 #[embassy_executor::task]
-async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SharedState>) {
+async fn action_button_task(
+    button: Input<'static>,
+    shared_state: &'static Mutex<NoopRawMutex, SharedState>,
+    settings_state: &'static Mutex<NoopRawMutex, SettingsState>,
+) {
     let mut last_state = button.is_high(); // true if not pressed
 
     loop {
@@ -94,9 +122,25 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
 
             if button.is_low() {
                 // confirmed press
-                let mut lock = shared.lock().await;
-                if lock.page != RECORD { return };
-                lock.is_recording = !lock.is_recording;
+                let mut lock = shared_state.lock().await;
+                if lock.page == SETTINGS {
+                    let mut settings_lock = settings_state.lock().await;
+                    let index = settings_lock.index;
+                    match &mut settings_lock.items[index] {
+                        SettingsWrapper::Default => {}
+                        SettingsWrapper::Bool(setting) => {
+                            setting.options.next();
+                        }
+                        SettingsWrapper::Text(setting) => {
+                            setting.options.next();
+                        }
+                        SettingsWrapper::AnyNumber(setting) => {
+                            setting.options.next();
+                        }
+                    };
+                } else {
+                    lock.is_recording = !lock.is_recording;
+                };
             }
         }
 
@@ -106,7 +150,10 @@ async fn button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex
 }
 
 #[embassy_executor::task]
-async fn page_button_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SharedState>) {
+async fn page_button_task(
+    button: Input<'static>,
+    shared: &'static Mutex<NoopRawMutex, SharedState>,
+) {
     let mut last_state = button.is_high(); // true if not pressed
 
     loop {
@@ -120,7 +167,11 @@ async fn page_button_task(button: Input<'static>, shared: &'static Mutex<NoopRaw
             if button.is_low() {
                 // confirmed press
                 let mut lock = shared.lock().await;
-                let next_page = if lock.page == SETTINGS { RECORD } else {SETTINGS};
+                let next_page = if lock.page == SETTINGS {
+                    RECORD
+                } else {
+                    SETTINGS
+                };
                 lock.page = next_page;
             }
         }
@@ -131,7 +182,10 @@ async fn page_button_task(button: Input<'static>, shared: &'static Mutex<NoopRaw
 }
 
 #[embassy_executor::task]
-async fn cursor_up_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SettingsState>) {
+async fn cursor_up_task(
+    button: Input<'static>,
+    shared: &'static Mutex<NoopRawMutex, SettingsState>,
+) {
     let mut last_state = button.is_high(); // true if not pressed
 
     loop {
@@ -145,8 +199,9 @@ async fn cursor_up_task(button: Input<'static>, shared: &'static Mutex<NoopRawMu
             if button.is_low() {
                 // confirmed press
                 let mut lock = shared.lock().await;
-                if lock.cursor_pos > 0 {
-                    lock.cursor_pos = (lock.cursor_pos - 1) % lock.items.len();
+
+                if lock.index > 0 {
+                    lock.index = (lock.index - 1) % lock.items.len();
                 }
             }
         }
@@ -157,7 +212,10 @@ async fn cursor_up_task(button: Input<'static>, shared: &'static Mutex<NoopRawMu
 }
 
 #[embassy_executor::task]
-async fn cursor_down_task(button: Input<'static>, shared: &'static Mutex<NoopRawMutex, SettingsState>) {
+async fn cursor_down_task(
+    button: Input<'static>,
+    shared: &'static Mutex<NoopRawMutex, SettingsState>,
+) {
     let mut last_state = button.is_high(); // true if not pressed
 
     loop {
@@ -171,7 +229,7 @@ async fn cursor_down_task(button: Input<'static>, shared: &'static Mutex<NoopRaw
             if button.is_low() {
                 // confirmed press
                 let mut lock = shared.lock().await;
-                lock.cursor_pos = (lock.cursor_pos + 1) % lock.items.len();
+                lock.index = (lock.index + 1) % lock.items.len();
             }
         }
 
@@ -199,25 +257,31 @@ static TX_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let auto_pause_string: String<16> = String::try_from("Auto Pause").unwrap();
-    let time_zone: String<16> = String::try_from("Time Zone").unwrap();
+    let auto_pause_setting = SettingsWrapper::Bool(Setting {
+        label: "Auto Pause",
+        options: CircularTracker::new(&[("Y", true), ("N", false)]),
+    });
 
-    let shared = SHARED_STATE.init(Mutex::new(SharedState {
+    let time_zone_setting = SettingsWrapper::AnyNumber(Setting {
+        label: "Time Zone",
+        options: CircularTracker::new(&[("EST", -5), ("CST", -7), ("PST", -9)]),
+    });
+
+    let shared_state = SHARED_STATE.init(Mutex::new(SharedState {
         is_recording: false,
-        page: RECORD
+        page: RECORD,
     }));
 
-    let settings_state = SETTINGS_STATE.init(Mutex::new(SettingsState {
-        cursor_pos: 0,
-        items: Vec::from_slice(
-            &[auto_pause_string,
-            time_zone]
-        ).unwrap()
-    }));
+    let settings_vec = &[auto_pause_setting, time_zone_setting];
+
+    let settings_state = SETTINGS_STATE.init(Mutex::new(CircularTracker::new(settings_vec)));
 
     let blink_mutex_ref = BLINK_STATE.init(Mutex::new(true));
 
     let p = embassy_nrf::init(Default::default());
+
+    let flash_addressing = 0x000E_0000..0x0010_0000;
+    let mut flash = Nvmc::new(p.NVMC);
 
     // set up uarte
     let mut uart_config = uarte::Config::default();
@@ -238,7 +302,8 @@ async fn main(spawner: Spawner) {
         Irqs,
         uart_config,
         &mut rx_buffer[..],
-        &mut tx_buffer[..]);
+        &mut tx_buffer[..],
+    );
 
     let serial_port = p.SERIAL0;
     let sda_pin = p.P1_12;
@@ -279,8 +344,8 @@ async fn main(spawner: Spawner) {
 
     let mut geo_stack = GeoStack::new();
 
-    spawner.spawn(page_button_task(page_button, shared).unwrap());
-    spawner.spawn(button_task(record_button, shared).unwrap());
+    spawner.spawn(page_button_task(page_button, shared_state).unwrap());
+    spawner.spawn(action_button_task(record_button, shared_state, settings_state).unwrap());
     spawner.spawn(cursor_up_task(cursor_up_button, settings_state).unwrap());
     spawner.spawn(cursor_down_task(cursor_down_button, settings_state).unwrap());
     spawner.spawn(gps_reader_task(gps_reader).unwrap());
@@ -288,7 +353,7 @@ async fn main(spawner: Spawner) {
 
     loop {
         let (is_recording, page) = {
-            let lock = shared.lock().await;
+            let lock = shared_state.lock().await;
             (lock.is_recording, lock.page)
         };
 
@@ -306,7 +371,6 @@ async fn main(spawner: Spawner) {
                 draw_static_text(&mut display, TEXT_STYLE_LG).unwrap();
 
                 if page == RECORD {
-
                     if should_blink {
                         draw_blinky(&mut display);
                     }
