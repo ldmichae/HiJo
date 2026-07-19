@@ -660,6 +660,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-nrf",
@@ -992,6 +993,7 @@ version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dba435ef5ab8fb57d6b6c53aefd7be60a2d9c67654d5cd1f72eb344f3b3b5e04"
 dependencies = [
+ "defmt",
  "embedded-storage-async",
 ]
 

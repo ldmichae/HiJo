@@ -34,7 +34,7 @@ pub async fn draw_settings(
                     .draw(display)
                     .unwrap();
                 Text::new(
-                    setting.options.current().0,
+                    setting.options.current().1.0,
                     Point::new(90, y_pos),
                     TEXT_STYLE_SM,
                 )
@@ -46,7 +46,7 @@ pub async fn draw_settings(
                     .draw(display)
                     .unwrap();
                 Text::new(
-                    setting.options.current().0,
+                    setting.options.current().1.0,
                     Point::new(90, y_pos),
                     TEXT_STYLE_SM,
                 )
@@ -58,7 +58,7 @@ pub async fn draw_settings(
                     .draw(display)
                     .unwrap();
                 Text::new(
-                    setting.options.current().0,
+                    setting.options.current().1.0,
                     Point::new(90, y_pos),
                     TEXT_STYLE_SM,
                 )

@@ -32,7 +32,8 @@ chrono = { version = "0.4.45", default-features = false }
 defmt = "1.1.1"
 defmt-rtt = "1.3.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-sequential-storage = "8.0.0"
+sequential-storage = {version = "8.0.0", features = ["defmt"]}
+embassy-embedded-hal = "0.6.0"
 
 
 [profile.release]
