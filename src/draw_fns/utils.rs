@@ -12,7 +12,11 @@ use ssd1306::{
 };
 
 use crate::{
-    TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS, draw_fns, gps::reader::GpsReaderResults,
+    draw_fns::{
+        self,
+        constants::{TEXT_STYLE_MD, TEXT_STYLE_SM, TEXT_STYLE_XS},
+    },
+    gps::reader::GpsReaderResults,
     utils::float::FloatToString,
 };
 

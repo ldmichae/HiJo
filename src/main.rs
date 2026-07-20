@@ -10,7 +10,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use sequential_storage::{
-    cache::{Cache, Uncached},
+    cache::Cache,
     map::{MapConfig, MapStorage},
 };
 use static_cell::StaticCell;
@@ -21,6 +21,7 @@ use panic_probe as _;
 use crate::{
     Page::{RECORD, SETTINGS},
     draw_fns::{
+        constants::TEXT_STYLE_LG,
         settings::draw_settings,
         utils::{
             draw_blinky, draw_coords, draw_current_speed, draw_hdop, draw_recording_status,
@@ -30,6 +31,13 @@ use crate::{
     gps::{
         reader::{GpsReader, ParseOut},
         stack::GeoStack,
+    },
+    settings::{
+        config::{
+            ProjNVMCStorage, configure_auto_pause_setting, configure_time_zone_setting,
+            configure_units_setting,
+        },
+        settings::{SettingsState, SettingsWrapper},
     },
     utils::vector::CircularTracker,
 };
@@ -46,16 +54,11 @@ use embassy_nrf::{
 };
 use nmea::sentences::FixType;
 
-use embedded_graphics::{
-    mono_font::{
-        MonoTextStyle, ascii::FONT_4X6, ascii::FONT_6X13, ascii::FONT_10X20, iso_8859_15::FONT_5X8,
-    },
-    pixelcolor::BinaryColor,
-    prelude::*,
-};
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 mod draw_fns;
+mod settings;
 bind_interrupts!(struct Irqs {
     SERIAL0 => twim::InterruptHandler<peripherals::SERIAL0>;
     SERIAL1 => buffered_uarte::InterruptHandler<peripherals::SERIAL1>;
@@ -68,15 +71,6 @@ static BLINK_STATE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
 
 static GPS_READER: StaticCell<GpsReader<'static>> = StaticCell::new();
 
-const TEXT_STYLE_LG: MonoTextStyle<'_, BinaryColor> =
-    MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-const TEXT_STYLE_MD: MonoTextStyle<'_, BinaryColor> =
-    MonoTextStyle::new(&FONT_6X13, BinaryColor::On);
-const TEXT_STYLE_SM: MonoTextStyle<'_, BinaryColor> =
-    MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
-const TEXT_STYLE_XS: MonoTextStyle<'_, BinaryColor> =
-    MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
     RECORD,
@@ -88,203 +82,115 @@ pub struct SharedState {
     pub page: Page,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Setting<T: Copy + Default> {
-    pub id: &'static u8,
-    pub label: &'static str,
-    pub options: CircularTracker<8, (&'static str, T)>,
-}
-
-#[derive(Copy, Clone, Default, Debug)]
-pub enum SettingsWrapper {
-    #[default]
-    Default,
-    Bool(Setting<bool>),
-    Text(Setting<&'static str>),
-    AnyNumber(Setting<isize>),
-}
-
-type SettingsState = CircularTracker<3, SettingsWrapper>;
-
 #[embassy_executor::task]
 async fn gps_reader_task(gps_reader: &'static mut GpsReader<'static>) {
     gps_reader.run().await;
 }
 
+pub async fn wait_for_press(input: &mut Input<'_>) {
+    input.wait_for_falling_edge().await;
+    Timer::after(Duration::from_millis(20)).await;
+}
+
 #[embassy_executor::task]
 async fn action_button_task(
-    button: Input<'static>,
+    mut button: Input<'static>,
     shared_state: &'static Mutex<NoopRawMutex, SharedState>,
     settings_state: &'static Mutex<NoopRawMutex, SettingsState>,
-    mut flash_storage: MapStorage<
-        u8,
-        BlockingAsync<Nvmc<'static>>,
-        Cache<Uncached, Uncached, Uncached, u8>,
-    >,
+    mut flash_storage: ProjNVMCStorage,
 ) {
-    let mut last_state = button.is_high(); // true if not pressed
-
     loop {
-        let current_state = button.is_high(); // still true if not pressed
+        wait_for_press(&mut button).await;
 
-        if last_state && !current_state {
-            // falling edge: just pressed
-            // debounce
-            Timer::after(Duration::from_millis(20)).await;
+        let mut lock = shared_state.lock().await;
+        if lock.page == SETTINGS {
+            let mut settings_lock = settings_state.lock().await;
+            let index = settings_lock.index;
+            let mut buf = [0u8; 32];
+            match &mut settings_lock.items[index] {
+                SettingsWrapper::Default => {}
+                SettingsWrapper::Bool(setting) => {
+                    setting.options.next();
+                    let v = &u8::try_from(setting.options.index).unwrap();
+                    let res = flash_storage.store_item(&mut buf, setting.id, v).await;
 
-            if button.is_low() {
-                // confirmed press
-                let mut lock = shared_state.lock().await;
-                if lock.page == SETTINGS {
-                    let mut settings_lock = settings_state.lock().await;
-                    let index = settings_lock.index;
-                    let mut buf = [0u8; 32];
-                    match &mut settings_lock.items[index] {
-                        SettingsWrapper::Default => {}
-                        SettingsWrapper::Bool(setting) => {
-                            setting.options.next();
-                            let v = &u8::try_from(setting.options.index).unwrap();
-                            info!(
-                                "Attempting to set flash setting for ID {}... idx_value {}... conv {}",
-                                setting.id, setting.options.index, v
-                            );
-                            let res = flash_storage.store_item(&mut buf, setting.id, v).await;
-
-                            info!("{:?}", res);
-                        }
-                        SettingsWrapper::Text(setting) => {
-                            setting.options.next();
-                            info!(
-                                "Attempting to set flash setting for ID {}... idx_value {}",
-                                setting.id, setting.options.index
-                            );
-                            let res = flash_storage
-                                .store_item(
-                                    &mut buf,
-                                    setting.id,
-                                    &u8::try_from(setting.options.index).unwrap(),
-                                )
-                                .await;
-                            info!("{:?}", res);
-                        }
-                        SettingsWrapper::AnyNumber(setting) => {
-                            setting.options.next();
-                            info!(
-                                "Attempting to set flash setting for ID {}... idx_value {}",
-                                setting.id, setting.options.index
-                            );
-                            let res = flash_storage
-                                .store_item(
-                                    &mut buf,
-                                    setting.id,
-                                    &u8::try_from(setting.options.index).unwrap(),
-                                )
-                                .await;
-                            info!("{:?}", res);
-                        }
-                    };
-                } else {
-                    lock.is_recording = !lock.is_recording;
-                };
-            }
-        }
-
-        last_state = current_state;
-        Timer::after(Duration::from_millis(10)).await;
+                    info!("{:?}", res);
+                }
+                SettingsWrapper::Text(setting) => {
+                    setting.options.next();
+                    let res = flash_storage
+                        .store_item(
+                            &mut buf,
+                            setting.id,
+                            &u8::try_from(setting.options.index).unwrap(),
+                        )
+                        .await;
+                    info!("{:?}", res);
+                }
+                SettingsWrapper::AnyNumber(setting) => {
+                    setting.options.next();
+                    let res = flash_storage
+                        .store_item(
+                            &mut buf,
+                            setting.id,
+                            &u8::try_from(setting.options.index).unwrap(),
+                        )
+                        .await;
+                    info!("{:?}", res);
+                }
+            };
+        } else {
+            lock.is_recording = !lock.is_recording;
+        };
     }
 }
 
 #[embassy_executor::task]
 async fn page_button_task(
-    button: Input<'static>,
+    mut button: Input<'static>,
     shared: &'static Mutex<NoopRawMutex, SharedState>,
 ) {
-    let mut last_state = button.is_high(); // true if not pressed
-
     loop {
-        let current_state = button.is_high(); // still true if not pressed
-
-        if last_state && !current_state {
-            // falling edge: just pressed
-            // debounce
-            Timer::after(Duration::from_millis(20)).await;
-
-            if button.is_low() {
-                // confirmed press
-                let mut lock = shared.lock().await;
-                let next_page = if lock.page == SETTINGS {
-                    RECORD
-                } else {
-                    SETTINGS
-                };
-                lock.page = next_page;
-            }
-        }
-
-        last_state = current_state;
-        Timer::after(Duration::from_millis(10)).await;
+        wait_for_press(&mut button).await;
+        let mut lock = shared.lock().await;
+        let next_page = if lock.page == SETTINGS {
+            RECORD
+        } else {
+            SETTINGS
+        };
+        lock.page = next_page;
     }
 }
 
 #[embassy_executor::task]
 async fn cursor_up_task(
-    button: Input<'static>,
+    mut button: Input<'static>,
     shared_state: &'static Mutex<NoopRawMutex, SharedState>,
     settings_state: &'static Mutex<NoopRawMutex, SettingsState>,
 ) {
-    let mut last_state = button.is_high(); // true if not pressed
-
     loop {
-        let current_state = button.is_high(); // still true if not pressed
-
-        if last_state && !current_state {
-            // falling edge: just pressed
-            // debounce
-            Timer::after(Duration::from_millis(20)).await;
-
-            if button.is_low() {
-                let lock = shared_state.lock().await;
-                if lock.page == SETTINGS {
-                    // confirmed press
-                    let mut lock = settings_state.lock().await;
-                    lock.previous();
-                }
-            }
+        wait_for_press(&mut button).await;
+        let lock = shared_state.lock().await;
+        if lock.page == SETTINGS {
+            let mut lock = settings_state.lock().await;
+            lock.previous();
         }
-
-        last_state = current_state;
-        Timer::after(Duration::from_millis(10)).await;
     }
 }
 
 #[embassy_executor::task]
 async fn cursor_down_task(
-    button: Input<'static>,
+    mut button: Input<'static>,
     shared_state: &'static Mutex<NoopRawMutex, SharedState>,
     settings_state: &'static Mutex<NoopRawMutex, SettingsState>,
 ) {
-    let mut last_state = button.is_high(); // true if not pressed
-
     loop {
-        let current_state = button.is_high(); // still true if not pressed
-
-        if last_state && !current_state {
-            // falling edge: just pressed
-            // debounce
-            Timer::after(Duration::from_millis(20)).await;
-
-            if button.is_low() {
-                let lock = shared_state.lock().await;
-                if lock.page == SETTINGS {
-                    // confirmed press
-                    let mut lock = settings_state.lock().await;
-                    lock.next();
-                }
-            }
+        wait_for_press(&mut button).await;
+        let lock = shared_state.lock().await;
+        if lock.page == SETTINGS {
+            let mut lock = settings_state.lock().await;
+            lock.next();
         }
-
-        last_state = current_state;
-        Timer::after(Duration::from_millis(10)).await;
     }
 }
 
@@ -318,35 +224,9 @@ async fn main(spawner: Spawner) {
     let mut storage = MapStorage::<u8, _, _>::new(flash, map_config, Cache::new_uncached());
 
     Timer::after_millis(250).await;
-    let mut auto_pause_saved_val_buf = [0; 32];
-    let auto_pause_saved_val = storage.fetch_item(&mut auto_pause_saved_val_buf, &1).await;
-    let auto_pause_setting = SettingsWrapper::Bool(Setting {
-        id: &1,
-        label: "Auto Pause",
-        options: CircularTracker::new(
-            &[("Y", true), ("N", false)],
-            auto_pause_saved_val.unwrap_or(None),
-        ),
-    });
-
-    let mut time_zone_saved_val_buf = [0; 32];
-    let time_zone_saved_val = storage.fetch_item(&mut time_zone_saved_val_buf, &2).await;
-    let time_zone_setting = SettingsWrapper::AnyNumber(Setting {
-        id: &2,
-        label: "Time Zone",
-        options: CircularTracker::new(
-            &[("EST", -5), ("CST", -7), ("PST", -9)],
-            time_zone_saved_val.unwrap_or(None),
-        ),
-    });
-
-    let mut unit_saved_val_buf = [0; 32];
-    let unit_saved_val = storage.fetch_item(&mut unit_saved_val_buf, &3).await;
-    let unit_setting = SettingsWrapper::AnyNumber(Setting {
-        id: &3,
-        label: "Units",
-        options: CircularTracker::new(&[("ft/mi", 0), ("m/km", 1)], unit_saved_val.unwrap_or(None)),
-    });
+    let auto_pause_setting = configure_auto_pause_setting(&mut storage).await;
+    let time_zone_setting = configure_time_zone_setting(&mut storage).await;
+    let unit_setting = configure_units_setting(&mut storage).await;
 
     let shared_state = SHARED_STATE.init(Mutex::new(SharedState {
         is_recording: false,

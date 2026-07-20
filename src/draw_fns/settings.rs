@@ -5,7 +5,7 @@ use ssd1306::{
     Ssd1306, mode::BufferedGraphicsMode, prelude::I2CInterface, size::DisplaySize128x64,
 };
 
-use crate::{SettingsState, SettingsWrapper, TEXT_STYLE_SM};
+use crate::{SettingsState, SettingsWrapper, draw_fns::constants::TEXT_STYLE_SM};
 
 pub async fn draw_settings(
     display: &mut Ssd1306<
